@@ -47,6 +47,7 @@ interface Canvas {
     selectRegion(enable: boolean): void;
     dragCanvas(enable: boolean): void;
     zoomCanvas(enable: boolean): void;
+    setViewId(viewId: number | null): void;
 
     mode(): Mode;
     cancel(): void;
@@ -106,6 +107,10 @@ class CanvasImpl implements Canvas {
 
     public zoomCanvas(enable: boolean): void {
         this.model.zoomCanvas(enable);
+    }
+
+    public setViewId(viewId: number | null): void {
+        this.model.setViewId(viewId);
     }
 
     public activate(clientID: number | null, attributeID: number | null = null): void {

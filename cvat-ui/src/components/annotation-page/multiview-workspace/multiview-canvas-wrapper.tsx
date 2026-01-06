@@ -40,7 +40,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const activeObjectType = useSelector((state: CombinedState) => state.annotation.drawing.activeObjectType);
     const curZLayer = useSelector((state: CombinedState) => state.annotation.annotations.zLayer.cur);
     const workspace = useSelector((state: CombinedState) => state.annotation.workspace);
-    const activeControl = useSelector((state: CombinedState) => state.annotation.activeControl);
 
     // Use refs for values that change frequently but shouldn't cause remount
     const stateRefs = useRef({
@@ -75,7 +74,11 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
      */
     const onCanvasShapeDrawn = useCallback((event: any): void => {
         const refs = stateRefs.current;
-        if (!refs.jobInstance || !canvasInstance) return;
+
+        if (!refs.jobInstance || !canvasInstance) {
+            console.error('[MultiviewCanvas] Missing jobInstance or canvasInstance');
+            return;
+        }
 
         const { state } = event.detail;
 
@@ -86,7 +89,18 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // Set annotation properties
         state.objectType = state.shapeType === ShapeType.MASK
             ? ObjectType.SHAPE : state.objectType ?? refs.activeObjectType;
-        state.label = state.label || refs.jobInstance.labels.find((label: any) => label.id === refs.activeLabelID);
+
+        // Find label: try activeLabelID first, then fallback to first available label
+        const foundLabel = refs.jobInstance.labels.find((label: any) => label.id === refs.activeLabelID);
+        const fallbackLabel = refs.jobInstance.labels[0];
+        state.label = state.label || foundLabel || fallbackLabel;
+
+        // Check if we have a valid label
+        if (!state.label) {
+            console.error('[MultiviewCanvas] No label available for annotation. Please create at least one label.');
+            return;
+        }
+
         state.frame = refs.frameNumber;
         state.rotation = state.rotation || 0;
         state.occluded = state.occluded || false;
@@ -97,8 +111,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         state.attributes = state.attributes || {};
         state.viewId = refs.activeViewId;
 
-        const objectState = new cvat.classes.ObjectState(state);
-        dispatch(createAnnotationsAsync([objectState]));
+        try {
+            const objectState = new cvat.classes.ObjectState(state);
+            dispatch(createAnnotationsAsync([objectState]));
+        } catch (error) {
+            console.error('[MultiviewCanvas] Failed to create annotation:', error);
+        }
     }, [canvasInstance, dispatch]);
 
     /**
@@ -147,7 +165,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
      * Mount canvas to container - only depends on container and canvas instance
      */
     useEffect(() => {
-        if (!canvasContainer || !canvasInstance) return;
+        if (!canvasContainer || !canvasInstance) {
+            return;
+        }
 
         // Clear container first
         while (canvasContainer.firstChild) {
@@ -159,22 +179,27 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         canvasContainer.appendChild(canvasHTML);
         mountedRef.current = true;
 
-        // Reset all canvas modes to IDLE - aggressively handle any stuck mode
+        // Reset any stuck canvas modes to IDLE on mount
         const currentMode = canvasInstance.mode();
         if (currentMode === 'zoom_canvas') {
             try {
                 canvasInstance.zoomCanvas(false);
             } catch (e) {
-                // Fallback: just cancel
+                // Mode might have already changed
             }
         } else if (currentMode === 'drag_canvas') {
             try {
                 canvasInstance.dragCanvas(false);
             } catch (e) {
-                // Fallback: just cancel
+                // Mode might have already changed
             }
         }
         canvasInstance.cancel();
+
+        // Set the active view ID on canvas for multiview annotation tracking
+        if (typeof (canvasInstance as any).setViewId === 'function') {
+            (canvasInstance as any).setViewId(activeViewId);
+        }
 
         // Configure canvas for multiview mode
         canvasInstance.configure({
@@ -265,42 +290,22 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [canvasInstance, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace]);
 
     /**
-     * Reset canvas mode when activeControl changes to a draw mode
-     * This fixes "Canvas is busy" error by forcing canvas to IDLE before draw
+     * Update canvas viewId when active view changes
      */
     useEffect(() => {
-        if (!canvasInstance || !mountedRef.current) return;
-
-        // Check if activeControl is a draw mode
-        const isDrawMode = typeof activeControl === 'string' && activeControl.startsWith('draw_');
-
-        if (isDrawMode) {
-            // Force canvas to IDLE mode before drawing
-            // Call cancel multiple times to ensure mode is reset
-            canvasInstance.cancel();
-
-            // If still not in idle mode, try direct mode reset approaches
-            const mode = canvasInstance.mode();
-            if (mode !== 'idle') {
-                // Try canceling specific modes
-                if (mode === 'zoom_canvas') {
-                    try {
-                        canvasInstance.zoomCanvas(false);
-                    } catch (e) {
-                        // Mode might have already changed, ignore
-                    }
-                } else if (mode === 'drag_canvas') {
-                    try {
-                        canvasInstance.dragCanvas(false);
-                    } catch (e) {
-                        // Mode might have already changed, ignore
-                    }
-                }
-                // Final cancel to ensure IDLE
-                canvasInstance.cancel();
-            }
+        if (!canvasInstance) {
+            return;
         }
-    }, [activeControl, canvasInstance]);
+
+        if (typeof (canvasInstance as any).setViewId === 'function') {
+            (canvasInstance as any).setViewId(activeViewId);
+        }
+    }, [canvasInstance, activeViewId]);
+
+    // Note: Removed the activeControl effect that was calling canvasInstance.cancel()
+    // when activeControl changed to a draw mode. This was causing the drawing to be
+    // immediately canceled after starting. The canvas mode is properly managed by
+    // the draw-shape-popover which calls canvasInstance.draw() to start drawing.
 
     // This component doesn't render anything - it just manages the canvas
     return null;

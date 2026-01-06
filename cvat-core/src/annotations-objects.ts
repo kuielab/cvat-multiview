@@ -512,6 +512,7 @@ export class Shape extends Drawn {
     public outside: boolean;
     public rotation: number;
     public zOrder: number;
+    public viewId: number | null;
 
     constructor(
         data: SerializedShape | SerializedShape['elements'][0],
@@ -525,6 +526,7 @@ export class Shape extends Drawn {
         this.occluded = data.occluded || false;
         this.outside = data.outside || false;
         this.zOrder = data.z_order;
+        this.viewId = (data as SerializedShape).view_id ?? null;
     }
 
     protected withContext(frame: number): ReturnType<Drawn['withContext']> & {
@@ -561,6 +563,7 @@ export class Shape extends Drawn {
             label_id: this.label.id,
             group: this.group,
             source: this.source,
+            view_id: this.viewId,
         };
 
         if (this.serverID !== null) {
@@ -600,6 +603,7 @@ export class Shape extends Drawn {
             pinned: this.pinned,
             frame,
             source: this.source,
+            viewId: this.viewId,
             __internal: this.withContext(frame),
         };
 

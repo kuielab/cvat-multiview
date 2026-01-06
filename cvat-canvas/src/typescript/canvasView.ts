@@ -1979,6 +1979,8 @@ export class CanvasViewImpl implements CanvasView, Listener {
             if (this.mode === Mode.MERGE) {
                 this.mergeHandler.repeatSelection();
             }
+            // Update drawHandler's viewId for multiview annotation tracking
+            this.drawHandler.setViewId(this.controller.viewId);
             const event: CustomEvent = new CustomEvent('canvas.setup');
             this.canvas.dispatchEvent(event);
         } else if (reason === UpdateReasons.ISSUE_REGIONS_UPDATED) {

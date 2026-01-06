@@ -91,12 +91,12 @@ export default function MultiviewObjectsList(): JSX.Element {
                             {/* View ID Badge */}
                             <div className='cvat-multiview-field'>
                                 <span className='cvat-multiview-field-label'>Camera View:</span>
-                                {selectedAnnotation.view_id ? (
+                                {selectedAnnotation.viewId ? (
                                     <Tag
-                                        color={getViewColor(selectedAnnotation.view_id)}
+                                        color={getViewColor(selectedAnnotation.viewId)}
                                         style={{ marginLeft: 8, fontWeight: 'bold' }}
                                     >
-                                        View {selectedAnnotation.view_id}
+                                        View {selectedAnnotation.viewId}
                                     </Tag>
                                 ) : (
                                     <Tag color='default' style={{ marginLeft: 8 }}>
