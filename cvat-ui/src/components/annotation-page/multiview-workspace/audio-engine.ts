@@ -220,4 +220,169 @@ export class MultiviewAudioEngine {
         this.audioContext = null;
         this.initialized = false;
     }
+
+    /**
+     * Ensure AudioContext is created (for offline processing)
+     */
+    public ensureContext(): AudioContext {
+        if (!this.audioContext) {
+            this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        return this.audioContext;
+    }
+
+    /**
+     * Fetch audio from video URL and decode to AudioBuffer
+     */
+    public async fetchAndDecodeAudio(videoUrl: string): Promise<AudioBuffer> {
+        const context = this.ensureContext();
+        const response = await fetch(videoUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        return context.decodeAudioData(arrayBuffer);
+    }
+
+    /**
+     * Mix multiple AudioBuffers into one (each at 20% volume to prevent clipping)
+     */
+    public mixAudioBuffers(buffers: AudioBuffer[]): AudioBuffer {
+        if (buffers.length === 0) {
+            throw new Error('No buffers to mix');
+        }
+
+        const context = this.ensureContext();
+        const sampleRate = buffers[0].sampleRate;
+        const maxLength = Math.max(...buffers.map((b) => b.length));
+        const numberOfChannels = 2; // Stereo output
+
+        const mixedBuffer = context.createBuffer(numberOfChannels, maxLength, sampleRate);
+
+        for (let channel = 0; channel < numberOfChannels; channel++) {
+            const outputData = mixedBuffer.getChannelData(channel);
+
+            buffers.forEach((buffer) => {
+                const sourceChannel = Math.min(channel, buffer.numberOfChannels - 1);
+                const inputData = buffer.getChannelData(sourceChannel);
+                const gain = 0.2; // 20% each to prevent clipping with 5 sources
+
+                for (let i = 0; i < inputData.length; i++) {
+                    outputData[i] += inputData[i] * gain;
+                }
+            });
+        }
+
+        return mixedBuffer;
+    }
+
+    /**
+     * Generate spectrogram data from AudioBuffer using FFT
+     * Returns 2D array: [timeSlice][frequencyBin]
+     */
+    public generateSpectrogramData(
+        buffer: AudioBuffer,
+        fftSize: number = 2048,
+        hopSize?: number,
+    ): number[][] {
+        const channelData = buffer.getChannelData(0); // Use left channel
+        const actualHopSize = hopSize || Math.floor(fftSize / 4); // 75% overlap
+        const spectrogramData: number[][] = [];
+
+        // Apply Hann window for smoother FFT
+        const hannWindow = new Float32Array(fftSize);
+        for (let i = 0; i < fftSize; i++) {
+            hannWindow[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (fftSize - 1)));
+        }
+
+        // Process each time window
+        for (let i = 0; i + fftSize <= channelData.length; i += actualHopSize) {
+            const windowedSignal = new Float32Array(fftSize);
+            for (let j = 0; j < fftSize; j++) {
+                windowedSignal[j] = channelData[i + j] * hannWindow[j];
+            }
+
+            const magnitudes = this.performFFT(windowedSignal);
+            spectrogramData.push(magnitudes);
+        }
+
+        return spectrogramData;
+    }
+
+    /**
+     * Perform FFT using Cooley-Tukey radix-2 algorithm
+     * Returns magnitude spectrum (0-255 scaled)
+     */
+    private performFFT(signal: Float32Array): number[] {
+        const n = signal.length;
+        const real = new Float32Array(signal);
+        const imag = new Float32Array(n);
+
+        // Bit-reversal permutation
+        const bits = Math.log2(n);
+        for (let i = 0; i < n; i++) {
+            const j = this.reverseBits(i, bits);
+            if (j > i) {
+                [real[i], real[j]] = [real[j], real[i]];
+                [imag[i], imag[j]] = [imag[j], imag[i]];
+            }
+        }
+
+        // Cooley-Tukey FFT
+        for (let size = 2; size <= n; size *= 2) {
+            const halfSize = size / 2;
+            const angleStep = (-2 * Math.PI) / size;
+
+            for (let i = 0; i < n; i += size) {
+                for (let j = 0; j < halfSize; j++) {
+                    const angle = angleStep * j;
+                    const cos = Math.cos(angle);
+                    const sin = Math.sin(angle);
+
+                    const evenIndex = i + j;
+                    const oddIndex = i + j + halfSize;
+
+                    const tReal = cos * real[oddIndex] - sin * imag[oddIndex];
+                    const tImag = sin * real[oddIndex] + cos * imag[oddIndex];
+
+                    real[oddIndex] = real[evenIndex] - tReal;
+                    imag[oddIndex] = imag[evenIndex] - tImag;
+                    real[evenIndex] += tReal;
+                    imag[evenIndex] += tImag;
+                }
+            }
+        }
+
+        // Calculate magnitudes (only first half - Nyquist)
+        const magnitudes: number[] = [];
+        const halfN = n / 2;
+
+        for (let i = 0; i < halfN; i++) {
+            const magnitude = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+            // Convert to decibels and scale to 0-255
+            const db = 20 * Math.log10(magnitude + 1e-10);
+            const minDb = -90;
+            const maxDb = -10;
+            const scaled = Math.round(((db - minDb) / (maxDb - minDb)) * 255);
+            magnitudes.push(Math.max(0, Math.min(255, scaled)));
+        }
+
+        return magnitudes;
+    }
+
+    /**
+     * Reverse bits for FFT bit-reversal permutation
+     */
+    private reverseBits(x: number, bits: number): number {
+        let result = 0;
+        for (let i = 0; i < bits; i++) {
+            result = (result << 1) | (x & 1);
+            x >>= 1;
+        }
+        return result;
+    }
+
+    /**
+     * Get sample rate from AudioContext
+     */
+    public getSampleRate(): number {
+        return this.audioContext?.sampleRate || 44100;
+    }
 }

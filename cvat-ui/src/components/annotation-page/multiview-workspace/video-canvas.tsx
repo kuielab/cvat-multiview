@@ -39,6 +39,8 @@ export default function VideoCanvas(props: Props): JSX.Element {
                 src={videoUrl}
                 className='multiview-video'
                 playsInline
+                crossOrigin="anonymous"
+                muted
             />
             <div className='view-label'>
                 View {viewId}
