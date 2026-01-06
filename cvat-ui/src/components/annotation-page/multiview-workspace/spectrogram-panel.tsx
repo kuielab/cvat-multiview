@@ -241,7 +241,7 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
 
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
-        const seekTime = (x / canvas.width) * duration;
+        const seekTime = (x / rect.width) * duration;
         const targetFrame = Math.floor(seekTime * fps) + job.startFrame;
 
         dispatch(changeFrameAsync(Math.min(targetFrame, job.stopFrame)));

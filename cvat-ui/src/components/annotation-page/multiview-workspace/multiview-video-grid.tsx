@@ -17,6 +17,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
     const { activeView, onViewSelect } = props;
 
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
+    const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
     // Check if multiviewData is loaded with all required views
@@ -49,6 +50,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
                         videoUrl={multiviewData.videos.view1.url}
                         fps={multiviewData.videos.view1.fps}
                         isActive={activeView === 1}
+                        playing={playing}
                     />
                 </div>
                 <div
@@ -64,6 +66,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
                         videoUrl={multiviewData.videos.view2.url}
                         fps={multiviewData.videos.view2.fps}
                         isActive={activeView === 2}
+                        playing={playing}
                     />
                 </div>
             </div>
@@ -81,6 +84,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
                         videoUrl={multiviewData.videos.view3.url}
                         fps={multiviewData.videos.view3.fps}
                         isActive={activeView === 3}
+                        playing={playing}
                     />
                 </div>
                 <div
@@ -96,6 +100,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
                         videoUrl={multiviewData.videos.view4.url}
                         fps={multiviewData.videos.view4.fps}
                         isActive={activeView === 4}
+                        playing={playing}
                     />
                 </div>
             </div>
@@ -113,6 +118,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
                         videoUrl={multiviewData.videos.view5.url}
                         fps={multiviewData.videos.view5.fps}
                         isActive={activeView === 5}
+                        playing={playing}
                     />
                 </div>
             </div>

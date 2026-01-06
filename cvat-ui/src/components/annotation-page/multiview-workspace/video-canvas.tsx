@@ -10,18 +10,19 @@ interface Props {
     videoUrl: string;
     fps: number;
     isActive: boolean;
+    playing: boolean;
 }
 
 export default function VideoCanvas(props: Props): JSX.Element {
     const {
-        viewId, frameNumber, videoUrl, fps, isActive,
+        viewId, frameNumber, videoUrl, fps, isActive, playing,
     } = props;
 
     const videoRef = useRef<HTMLVideoElement>(null);
 
-    // Sync video to frame number
+    // Sync video to frame number when not playing
     useEffect(() => {
-        if (videoRef.current && fps > 0) {
+        if (videoRef.current && fps > 0 && !playing) {
             const video = videoRef.current;
             const targetTime = frameNumber / fps;
 
@@ -30,7 +31,21 @@ export default function VideoCanvas(props: Props): JSX.Element {
                 video.currentTime = targetTime;
             }
         }
-    }, [frameNumber, fps]);
+    }, [frameNumber, fps, playing]);
+
+    // Handle play/pause based on playing state
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        if (playing) {
+            video.play().catch((error) => {
+                console.warn('Video play failed:', error);
+            });
+        } else {
+            video.pause();
+        }
+    }, [playing]);
 
     return (
         <div className='video-canvas-container'>
