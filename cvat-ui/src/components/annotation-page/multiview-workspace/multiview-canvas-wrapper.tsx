@@ -108,7 +108,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         state.hidden = state.hidden || false;
 
         // Set viewId to track which view this annotation belongs to
-        state.attributes = state.attributes || {};
+        // Note: Do NOT set state.attributes here - ObjectState constructor handles
+        // attribute initialization internally. Setting it here can cause validation
+        // issues with non-integer attribute IDs.
         state.viewId = refs.activeViewId;
 
         try {

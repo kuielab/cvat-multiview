@@ -583,6 +583,15 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
             this.data.angle = 0;
         }
 
+        // Set imageSize synchronously so drawing can access correct dimensions
+        // before async image data is fully loaded
+        if (frameData.height && frameData.width) {
+            this.data.imageSize = {
+                height: frameData.height as number,
+                width: frameData.width as number,
+            };
+        }
+
         const { zLayer: prevZLayer, objects: prevObjects } = this.data;
         frameData
             .data((): void => {

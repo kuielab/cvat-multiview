@@ -35,10 +35,17 @@ const validateAttributesList = (
 };
 
 const objectAttributesAsList = (state: ObjectState): { spec_id: number, value: string }[] => (
-    Object.entries(state.attributes).map(([key, value]) => ({
-        spec_id: +key,
-        value,
-    }))
+    Object.entries(state.attributes)
+        .filter(([key]) => {
+            // Only include entries with valid positive integer keys (attribute spec IDs)
+            // This filters out any non-numeric keys that might have been accidentally added
+            const numKey = +key;
+            return Number.isInteger(numKey) && numKey > 0;
+        })
+        .map(([key, value]) => ({
+            spec_id: +key,
+            value,
+        }))
 );
 
 const labelAttributesAsDict = (label: Label): Record<number, Attribute> => (

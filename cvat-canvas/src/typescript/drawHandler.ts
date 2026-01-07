@@ -366,12 +366,12 @@ export class DrawHandlerImpl implements DrawHandler {
 
     private onDrawDone(...args: any[]): void {
         // Inject viewId into the data object if multiview is active
+        // Note: Set viewId as a direct property, NOT in attributes object
+        // Setting in attributes causes "attribute id" validation error because
+        // "view_id" string key converts to NaN when parsed as integer
         if (args[0] && this.viewId !== null) {
             const data = args[0];
-            if (!data.attributes) {
-                data.attributes = {};
-            }
-            data.attributes.view_id = this.viewId;
+            data.viewId = this.viewId;
         }
 
         if (this.drawData.onDrawDone) {
@@ -386,7 +386,7 @@ export class DrawHandlerImpl implements DrawHandler {
         this.viewId = viewId;
     }
 
-    private release(): void {
+    private release(skipOnDrawDone: boolean = false): void {
         if (!this.initialized) {
             // prevents recursive calls
             return;
@@ -401,7 +401,8 @@ export class DrawHandlerImpl implements DrawHandler {
         // For example when draw from initialState
         // Or when no drawn points, but we call cancel() drawing
         // We check if it is activated with remember function
-        if (this.drawInstance.remember('_paintHandler')) {
+        const hasPaintHandler = this.drawInstance.remember('_paintHandler');
+        if (hasPaintHandler) {
             if (['polygon', 'polyline', 'points'].includes(this.drawData.shapeType) ||
                 (this.drawData.shapeType === 'cuboid' &&
                 this.drawData.cuboidDrawingMethod === CuboidDrawingMethod.CORNER_POINTS)) {
@@ -410,7 +411,9 @@ export class DrawHandlerImpl implements DrawHandler {
             }
             // Clear drawing
             this.drawInstance.draw('stop');
-        } else {
+        } else if (!skipOnDrawDone) {
+            // Only call onDrawDone(null) if not already handled by the caller
+            // (e.g., drawBox/drawEllipse handlers call onDrawDone before release)
             this.onDrawDone(null);
             if (this.drawInstance && this.drawData.shapeType === 'ellipse' && !this.drawData.initialState) {
                 this.drawInstance.fire('drawstop');
@@ -454,7 +457,9 @@ export class DrawHandlerImpl implements DrawHandler {
                     return;
                 }
 
-                this.release();
+                // Call onDrawDone BEFORE release() because svg.draw.js removes
+                // the paint handler before firing drawstop, causing release()
+                // to call onDrawDone(null) prematurely
                 if (checkConstraint('rectangle', [xtl, ytl, xbr, ybr])) {
                     this.onDrawDone({
                         clientID,
@@ -465,6 +470,8 @@ export class DrawHandlerImpl implements DrawHandler {
                 } else {
                     this.onDrawDone(null);
                 }
+                // Pass true to skip onDrawDone in release() since we already called it above
+                this.release(true);
             })
             .on('drawupdate', (): void => {
                 this.shapeSizeElement.update(this.drawInstance);
