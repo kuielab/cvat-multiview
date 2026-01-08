@@ -3308,7 +3308,8 @@ class LabeledShapeSerializer(SubLabeledShapeSerializer):
         return attrs
 
 def _convert_annotation(obj, keys):
-    return OrderedDict([(key, obj[key]) for key in keys])
+    # Use .get() to handle missing keys gracefully (e.g., view_id for older annotations)
+    return OrderedDict([(key, obj.get(key)) for key in keys])
 
 def _convert_attributes(attr_set):
     attr_keys = ['spec_id', 'value']
