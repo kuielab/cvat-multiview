@@ -382,6 +382,9 @@ class ObjectManager:
 
     def merge(self, objects, start_frame, overlap):
         assert isinstance(objects, list) and isinstance(self.objects, list)
+        # Default overlap to 0 if None (e.g., for multiview tasks)
+        if overlap is None:
+            overlap = 0
         # 1. Split objects on two parts: new and which can be intersected
         # with existing objects.
         new_objects = [obj for obj in objects if obj["frame"] >= start_frame + overlap]

@@ -42,6 +42,9 @@ export default function MultiviewWorkspace(): JSX.Element {
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
+    // Debug: log when this component re-renders
+    console.log(`[MultiviewWorkspace] render, frameNumber=${frameNumber}`);
+
     // Get FPS from multiview data, fallback to 30
     const fps = multiviewData?.videos?.view1?.fps || 30;
 

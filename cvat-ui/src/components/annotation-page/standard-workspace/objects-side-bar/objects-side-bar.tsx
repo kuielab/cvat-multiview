@@ -25,6 +25,7 @@ interface OwnProps {
 interface StateToProps {
     sidebarCollapsed: boolean;
     jobInstance: any;
+    frameNumber: number;
 }
 
 interface DispatchToProps {
@@ -36,12 +37,14 @@ function mapStateToProps(state: CombinedState): StateToProps {
         annotation: {
             sidebarCollapsed,
             job: { instance: jobInstance },
+            player: { frame: { number: frameNumber } },
         },
     } = state;
 
     return {
         sidebarCollapsed,
         jobInstance,
+        frameNumber,
     };
 }
 

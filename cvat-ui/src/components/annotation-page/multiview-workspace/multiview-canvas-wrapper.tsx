@@ -18,6 +18,20 @@ import { filterAnnotations } from 'utils/filter-annotations';
 
 const cvat = getCore();
 
+// Debounce utility for ResizeObserver
+function debounce<T extends (...args: any[]) => void>(func: T, wait: number): T {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    return ((...args: any[]) => {
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+        }
+        timeoutId = setTimeout(() => {
+            func(...args);
+            timeoutId = null;
+        }, wait);
+    }) as T;
+}
+
 interface Props {
     canvasContainer: HTMLDivElement | null;
     videoElement: HTMLVideoElement | null;
@@ -220,15 +234,17 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         canvasHTML.addEventListener('canvas.dragstart', onCanvasDragStart);
         canvasHTML.addEventListener('canvas.dragstop', onCanvasDragDone);
 
-        // Setup ResizeObserver to handle container resize
+        // Setup ResizeObserver to handle container resize with debouncing
+        // to prevent excessive fitCanvas calls that can clear annotations
         if (resizeObserverRef.current) {
             resizeObserverRef.current.disconnect();
         }
-        resizeObserverRef.current = new ResizeObserver(() => {
+        const debouncedFitCanvas = debounce(() => {
             if (mountedRef.current && canvasInstance) {
                 canvasInstance.fitCanvas();
             }
-        });
+        }, 100);
+        resizeObserverRef.current = new ResizeObserver(debouncedFitCanvas);
         resizeObserverRef.current.observe(canvasContainer);
 
         // Initial setup with current frame data

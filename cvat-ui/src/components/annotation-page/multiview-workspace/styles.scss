@@ -67,8 +67,20 @@
         display: flex;
         gap: 8px;
 
-        &.single {
-            max-height: 250px;
+        // Row with only one cell should show cell at half width
+        &.half-width {
+            .multiview-cell {
+                flex: 0 0 calc(50% - 4px);
+                max-width: calc(50% - 4px);
+            }
+        }
+
+        // Single view mode - full width
+        &.single-view-mode {
+            .multiview-cell {
+                flex: 1;
+                max-width: 100%;
+            }
         }
     }
 

@@ -16,6 +16,12 @@ interface Props {
     onVideoRef?: (viewId: number, video: HTMLVideoElement | null) => void;
 }
 
+interface ViewConfig {
+    viewId: number;
+    url: string;
+    fps: number;
+}
+
 export default function MultiviewVideoGrid(props: Props): JSX.Element {
     const { activeView, onViewSelect, playbackRate, onCanvasContainerReady, onVideoRef } = props;
 
@@ -23,123 +29,83 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
     const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
-    // Check if multiviewData is loaded with all required views
-    if (!multiviewData?.videos?.view1?.url ||
-        !multiviewData?.videos?.view2?.url ||
-        !multiviewData?.videos?.view3?.url ||
-        !multiviewData?.videos?.view4?.url ||
-        !multiviewData?.videos?.view5?.url) {
+    // Collect available views dynamically
+    const availableViews: ViewConfig[] = [];
+    if (multiviewData?.videos) {
+        const viewKeys = ['view1', 'view2', 'view3', 'view4', 'view5'] as const;
+        viewKeys.forEach((key, index) => {
+            const viewData = multiviewData.videos[key];
+            if (viewData?.url) {
+                availableViews.push({
+                    viewId: index + 1,
+                    url: viewData.url,
+                    fps: viewData.fps || 30,
+                });
+            }
+        });
+    }
+
+    // Check if we have at least one view
+    if (availableViews.length === 0) {
         return (
             <div className='multiview-grid-loading'>
                 <p>Loading multiview data...</p>
-                <p>Please ensure this is a multiview task with 5 video streams.</p>
+                <p>Please ensure this is a multiview task with video streams.</p>
             </div>
         );
     }
 
+    // Single view mode - show full width
+    const isSingleView = availableViews.length === 1;
+
+    // Render a cell for a given view
+    const renderCell = (view: ViewConfig): JSX.Element => (
+        <div
+            key={view.viewId}
+            className={`multiview-cell ${activeView === view.viewId ? 'active' : ''}`}
+            onClick={() => onViewSelect(view.viewId)}
+            role='button'
+            tabIndex={0}
+            onKeyPress={(e) => e.key === 'Enter' && onViewSelect(view.viewId)}
+        >
+            <VideoCanvas
+                viewId={view.viewId}
+                frameNumber={frameNumber}
+                videoUrl={view.url}
+                fps={view.fps}
+                isActive={activeView === view.viewId}
+                playing={playing}
+                playbackRate={playbackRate}
+                onCanvasContainerReady={activeView === view.viewId ? onCanvasContainerReady : undefined}
+                onVideoRef={onVideoRef}
+            />
+        </div>
+    );
+
+    // Group views into rows of 2
+    const rows: ViewConfig[][] = [];
+    for (let i = 0; i < availableViews.length; i += 2) {
+        rows.push(availableViews.slice(i, i + 2));
+    }
+
     return (
         <div className='multiview-grid'>
-            <div className='multiview-grid-row'>
-                <div
-                    className={`multiview-cell ${activeView === 1 ? 'active' : ''}`}
-                    onClick={() => onViewSelect(1)}
-                    role='button'
-                    tabIndex={0}
-                    onKeyPress={(e) => e.key === 'Enter' && onViewSelect(1)}
-                >
-                    <VideoCanvas
-                        viewId={1}
-                        frameNumber={frameNumber}
-                        videoUrl={multiviewData.videos.view1.url}
-                        fps={multiviewData.videos.view1.fps}
-                        isActive={activeView === 1}
-                        playing={playing}
-                        playbackRate={playbackRate}
-                        onCanvasContainerReady={activeView === 1 ? onCanvasContainerReady : undefined}
-                        onVideoRef={onVideoRef}
-                    />
-                </div>
-                <div
-                    className={`multiview-cell ${activeView === 2 ? 'active' : ''}`}
-                    onClick={() => onViewSelect(2)}
-                    role='button'
-                    tabIndex={0}
-                    onKeyPress={(e) => e.key === 'Enter' && onViewSelect(2)}
-                >
-                    <VideoCanvas
-                        viewId={2}
-                        frameNumber={frameNumber}
-                        videoUrl={multiviewData.videos.view2.url}
-                        fps={multiviewData.videos.view2.fps}
-                        isActive={activeView === 2}
-                        playing={playing}
-                        playbackRate={playbackRate}
-                        onCanvasContainerReady={activeView === 2 ? onCanvasContainerReady : undefined}
-                        onVideoRef={onVideoRef}
-                    />
-                </div>
-            </div>
-            <div className='multiview-grid-row'>
-                <div
-                    className={`multiview-cell ${activeView === 3 ? 'active' : ''}`}
-                    onClick={() => onViewSelect(3)}
-                    role='button'
-                    tabIndex={0}
-                    onKeyPress={(e) => e.key === 'Enter' && onViewSelect(3)}
-                >
-                    <VideoCanvas
-                        viewId={3}
-                        frameNumber={frameNumber}
-                        videoUrl={multiviewData.videos.view3.url}
-                        fps={multiviewData.videos.view3.fps}
-                        isActive={activeView === 3}
-                        playing={playing}
-                        playbackRate={playbackRate}
-                        onCanvasContainerReady={activeView === 3 ? onCanvasContainerReady : undefined}
-                        onVideoRef={onVideoRef}
-                    />
-                </div>
-                <div
-                    className={`multiview-cell ${activeView === 4 ? 'active' : ''}`}
-                    onClick={() => onViewSelect(4)}
-                    role='button'
-                    tabIndex={0}
-                    onKeyPress={(e) => e.key === 'Enter' && onViewSelect(4)}
-                >
-                    <VideoCanvas
-                        viewId={4}
-                        frameNumber={frameNumber}
-                        videoUrl={multiviewData.videos.view4.url}
-                        fps={multiviewData.videos.view4.fps}
-                        isActive={activeView === 4}
-                        playing={playing}
-                        playbackRate={playbackRate}
-                        onCanvasContainerReady={activeView === 4 ? onCanvasContainerReady : undefined}
-                        onVideoRef={onVideoRef}
-                    />
-                </div>
-            </div>
-            <div className='multiview-grid-row single'>
-                <div
-                    className={`multiview-cell ${activeView === 5 ? 'active' : ''}`}
-                    onClick={() => onViewSelect(5)}
-                    role='button'
-                    tabIndex={0}
-                    onKeyPress={(e) => e.key === 'Enter' && onViewSelect(5)}
-                >
-                    <VideoCanvas
-                        viewId={5}
-                        frameNumber={frameNumber}
-                        videoUrl={multiviewData.videos.view5.url}
-                        fps={multiviewData.videos.view5.fps}
-                        isActive={activeView === 5}
-                        playing={playing}
-                        playbackRate={playbackRate}
-                        onCanvasContainerReady={activeView === 5 ? onCanvasContainerReady : undefined}
-                        onVideoRef={onVideoRef}
-                    />
-                </div>
-            </div>
+            {rows.map((row, rowIndex) => {
+                // Determine row class based on number of cells and total views
+                let rowClass = 'multiview-grid-row';
+                if (isSingleView) {
+                    rowClass += ' single-view-mode';
+                } else if (row.length === 1) {
+                    // Odd cell at the end - use half width
+                    rowClass += ' half-width';
+                }
+
+                return (
+                    <div key={rowIndex} className={rowClass}>
+                        {row.map(renderCell)}
+                    </div>
+                );
+            })}
         </div>
     );
 }

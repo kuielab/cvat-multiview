@@ -26,7 +26,7 @@ import Space from 'antd/lib/space';
 import Switch from 'antd/lib/switch';
 import {
     getCore, Job, Loader, Project, Storage, StorageData, StorageLocation,
-    Task,
+    Task, DimensionType,
 } from 'cvat-core-wrapper';
 import StorageField from 'components/storage/storage-field';
 import { createAction, ActionUnion } from 'utils/redux';
@@ -574,7 +574,11 @@ function ImportDatasetModal(props: StateToProps): JSX.Element {
                             .filter(
                                 (importer: any): boolean => (
                                     instance !== null &&
-                                    (!instance?.dimension || importer.dimension === instance.dimension)
+                                    (!instance?.dimension ||
+                                        importer.dimension === instance.dimension ||
+                                        // Multiview tasks can use 2D import formats
+                                        (instance?.dimension === DimensionType.MULTIVIEW &&
+                                            importer.dimension === DimensionType.DIMENSION_2D))
                                 ),
                             )
                             .map(

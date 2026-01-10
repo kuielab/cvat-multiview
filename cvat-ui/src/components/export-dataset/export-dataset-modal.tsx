@@ -27,7 +27,7 @@ import { exportActions, exportDatasetAsync } from 'actions/export-actions';
 import { makeBulkOperationAsync } from 'actions/bulk-actions';
 import {
     Dumper, ProjectOrTaskOrJob, Job, Project,
-    Storage, StorageData, StorageLocation, Task,
+    Storage, StorageData, StorageLocation, Task, DimensionType,
 } from 'cvat-core-wrapper';
 
 type FormValues = {
@@ -286,6 +286,9 @@ function ExportDatasetModal(props: Readonly<StateToProps>): JSX.Element {
                         {sortedDumpers
                             .filter(
                                 (dumper: Dumper): boolean => dumper.dimension === instance?.dimension ||
+                                    // Multiview tasks can use 2D export formats
+                                    (instance?.dimension === DimensionType.MULTIVIEW &&
+                                        dumper.dimension === DimensionType.DIMENSION_2D) ||
                                     (instance instanceof Project && instance.dimension === null),
                             )
                             .map(

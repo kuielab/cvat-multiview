@@ -31,6 +31,12 @@ export default function MultiviewObjectsList(): JSX.Element {
     const dispatch = useDispatch();
     const activatedStateID = useSelector((state: CombinedState) => state.annotation.annotations.activatedStateID);
     const states = useSelector((state: CombinedState) => state.annotation.annotations.states);
+    // Subscribe to frame changes to force ObjectsListContainer to re-filter
+    // This is needed because the connected component doesn't properly re-render on frame change
+    const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
+
+    // Debug: log when this component re-renders
+    console.log(`[MultiviewObjectsList] render, frameNumber=${frameNumber}`);
 
     // Find the currently selected annotation
     const selectedAnnotation = states.find((state: any) => state.clientID === activatedStateID);
@@ -71,8 +77,8 @@ export default function MultiviewObjectsList(): JSX.Element {
 
     return (
         <div className='cvat-multiview-objects-list'>
-            {/* Standard objects list */}
-            <ObjectsListContainer />
+            {/* Standard objects list - key prop forces re-render on frame change */}
+            <ObjectsListContainer key={`objects-list-frame-${frameNumber}`} />
 
             {/* Multiview-specific fields panel */}
             {selectedAnnotation && (
