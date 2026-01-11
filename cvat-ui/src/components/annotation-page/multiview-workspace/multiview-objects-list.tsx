@@ -35,9 +35,6 @@ export default function MultiviewObjectsList(): JSX.Element {
     // This is needed because the connected component doesn't properly re-render on frame change
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
 
-    // Debug: log when this component re-renders
-    console.log(`[MultiviewObjectsList] render, frameNumber=${frameNumber}`);
-
     // Find the currently selected annotation
     const selectedAnnotation = states.find((state: any) => state.clientID === activatedStateID);
 
