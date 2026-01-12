@@ -15,6 +15,7 @@ import {
     resetCanvas,
     activateObject,
     updateAnnotationsAsync,
+    removeObject as removeObjectAction,
 } from 'actions/annotation-actions';
 import { filterAnnotations } from 'utils/filter-annotations';
 
@@ -144,6 +145,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         onCursorMoved: ((e: any) => Promise<void>) | null;
         onEditDone: ((e: any) => void) | null;
         onMouseDown: ((e: MouseEvent) => void) | null;
+        onKeyDown: ((e: KeyboardEvent) => void) | null;
     }>({
         onShapeDrawn: null,
         onSetup: null,
@@ -157,6 +159,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         onCursorMoved: null,
         onEditDone: null,
         onMouseDown: null,
+        onKeyDown: null,
     });
 
     /**
@@ -332,6 +335,38 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         dispatch(updateAnnotationsAsync([state]));
     }, [dispatch]);
 
+    /**
+     * Handle keydown event - Delete key to remove activated annotation
+     */
+    const onKeyDown = useCallback((event: KeyboardEvent): void => {
+        const refs = stateRefs.current;
+
+        // Only handle Delete key
+        if (event.key !== 'Delete') return;
+
+        // Prevent if in draw mode or other active operations
+        if (isCanvasInDrawMode(canvasInstance)) return;
+
+        // Find the activated state
+        if (refs.activatedStateID === null) return;
+
+        const activatedState = refs.annotations.find(
+            (state: ObjectState) => state.clientID === refs.activatedStateID,
+        );
+
+        if (!activatedState) return;
+
+        // Check if object is locked (shift key forces delete of locked objects)
+        const force = event.shiftKey;
+
+        // Dispatch remove action
+        dispatch(removeObjectAction(activatedState, force));
+
+        // Prevent default behavior
+        event.preventDefault();
+        event.stopPropagation();
+    }, [canvasInstance, dispatch]);
+
     // Update event handler refs whenever callbacks change
     useEffect(() => {
         eventHandlersRef.current = {
@@ -347,8 +382,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             onCursorMoved: onCanvasCursorMoved,
             onEditDone: onCanvasEditDone,
             onMouseDown: onCanvasMouseDown,
+            onKeyDown,
         };
-    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown]);
+    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown, onKeyDown]);
 
     /**
      * Mount canvas to container - only depends on container and canvas instance
@@ -441,6 +477,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const handleMouseDown = (e: MouseEvent): void => {
             eventHandlersRef.current.onMouseDown?.(e);
         };
+        const handleKeyDown = (e: KeyboardEvent): void => {
+            eventHandlersRef.current.onKeyDown?.(e);
+        };
 
         // Add event listeners with stable wrapper functions
         canvasHTML.addEventListener('canvas.drawn', handleShapeDrawn);
@@ -455,6 +494,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         canvasHTML.addEventListener('canvas.moved', handleCursorMoved as EventListener);
         canvasHTML.addEventListener('canvas.editdone', handleEditDone);
         canvasHTML.addEventListener('mousedown', handleMouseDown);
+
+        // Add keydown listener to document for Delete key support
+        document.addEventListener('keydown', handleKeyDown);
 
         // Setup ResizeObserver to handle container resize with debouncing
         // to prevent excessive fitCanvas calls that can clear annotations
@@ -508,6 +550,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             canvasHTML.removeEventListener('canvas.moved', handleCursorMoved as EventListener);
             canvasHTML.removeEventListener('canvas.editdone', handleEditDone);
             canvasHTML.removeEventListener('mousedown', handleMouseDown);
+            document.removeEventListener('keydown', handleKeyDown);
 
             // Disconnect resize observer
             if (resizeObserverRef.current) {
