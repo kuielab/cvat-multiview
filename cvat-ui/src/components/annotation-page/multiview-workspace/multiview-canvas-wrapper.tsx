@@ -18,6 +18,23 @@ import {
 } from 'actions/annotation-actions';
 import { filterAnnotations } from 'utils/filter-annotations';
 
+// Draw-related modes that should not be interrupted
+const DRAW_MODES: string[] = ['draw', 'draw_rect', 'draw_polygon', 'draw_polyline', 'draw_points', 'draw_ellipse', 'draw_cuboid', 'draw_skeleton', 'draw_mask'];
+
+// ActiveControl values that indicate a draw operation is requested/in progress
+const DRAW_ACTIVE_CONTROLS = [
+    ActiveControl.DRAW_RECTANGLE,
+    ActiveControl.DRAW_POLYGON,
+    ActiveControl.DRAW_POLYLINE,
+    ActiveControl.DRAW_POINTS,
+    ActiveControl.DRAW_ELLIPSE,
+    ActiveControl.DRAW_CUBOID,
+    ActiveControl.DRAW_SKELETON,
+    ActiveControl.DRAW_MASK,
+    ActiveControl.AI_TOOLS,
+    ActiveControl.OPENCV_TOOLS,
+];
+
 const cvat = getCore();
 
 // Debounce utility for ResizeObserver
@@ -32,6 +49,28 @@ function debounce<T extends (...args: any[]) => void>(func: T, wait: number): T 
             timeoutId = null;
         }, wait);
     }) as T;
+}
+
+// Helper to check if canvas is in draw mode
+function isCanvasInDrawMode(canvasInstance: Canvas | null): boolean {
+    if (!canvasInstance) return false;
+    try {
+        const currentMode = canvasInstance.mode();
+        return DRAW_MODES.includes(currentMode);
+    } catch {
+        return false;
+    }
+}
+
+// Helper to check if a draw operation is requested via Redux activeControl
+// This catches cases where draw is requested but canvas hasn't entered draw mode yet
+function isDrawOperationRequested(activeControl: ActiveControl): boolean {
+    return DRAW_ACTIVE_CONTROLS.includes(activeControl);
+}
+
+// Combined check: either canvas is in draw mode OR draw operation is requested
+function shouldPreserveDrawState(canvasInstance: Canvas | null, activeControl: ActiveControl): boolean {
+    return isCanvasInDrawMode(canvasInstance) || isDrawOperationRequested(activeControl);
 }
 
 interface Props {
@@ -57,6 +96,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const curZLayer = useSelector((state: CombinedState) => state.annotation.annotations.zLayer.cur);
     const workspace = useSelector((state: CombinedState) => state.annotation.workspace);
     const activatedStateID = useSelector((state: CombinedState) => state.annotation.annotations.activatedStateID);
+    const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
 
     // Use refs for values that change frequently but shouldn't cause remount
     const stateRefs = useRef({
@@ -70,6 +110,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         frameData,
         workspace,
         activatedStateID,
+        activeControl,
     });
 
     // Update refs when values change
@@ -85,8 +126,38 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             frameData,
             workspace,
             activatedStateID,
+            activeControl,
         };
-    }, [activeLabelID, activeObjectType, frameNumber, activeViewId, jobInstance, annotations, curZLayer, frameData, workspace, activatedStateID]);
+    }, [activeLabelID, activeObjectType, frameNumber, activeViewId, jobInstance, annotations, curZLayer, frameData, workspace, activatedStateID, activeControl]);
+
+    // Refs for stable event handler references (to avoid useEffect dependency issues)
+    const eventHandlersRef = useRef<{
+        onShapeDrawn: ((e: any) => void) | null;
+        onSetup: (() => void) | null;
+        onCancel: (() => void) | null;
+        onZoomStart: (() => void) | null;
+        onZoomDone: (() => void) | null;
+        onDragStart: (() => void) | null;
+        onDragDone: (() => void) | null;
+        onShapeClicked: ((e: any) => void) | null;
+        onShapeDeactivated: ((e: any) => void) | null;
+        onCursorMoved: ((e: any) => Promise<void>) | null;
+        onEditDone: ((e: any) => void) | null;
+        onMouseDown: ((e: MouseEvent) => void) | null;
+    }>({
+        onShapeDrawn: null,
+        onSetup: null,
+        onCancel: null,
+        onZoomStart: null,
+        onZoomDone: null,
+        onDragStart: null,
+        onDragDone: null,
+        onShapeClicked: null,
+        onShapeDeactivated: null,
+        onCursorMoved: null,
+        onEditDone: null,
+        onMouseDown: null,
+    });
 
     /**
      * Handle shape drawn event - create annotation with viewId
@@ -261,8 +332,27 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         dispatch(updateAnnotationsAsync([state]));
     }, [dispatch]);
 
+    // Update event handler refs whenever callbacks change
+    useEffect(() => {
+        eventHandlersRef.current = {
+            onShapeDrawn: onCanvasShapeDrawn,
+            onSetup: onCanvasSetup,
+            onCancel: onCanvasCancel,
+            onZoomStart: onCanvasZoomStart,
+            onZoomDone: onCanvasZoomDone,
+            onDragStart: onCanvasDragStart,
+            onDragDone: onCanvasDragDone,
+            onShapeClicked: onCanvasShapeClicked,
+            onShapeDeactivated: onCanvasShapeDeactivated,
+            onCursorMoved: onCanvasCursorMoved,
+            onEditDone: onCanvasEditDone,
+            onMouseDown: onCanvasMouseDown,
+        };
+    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown]);
+
     /**
      * Mount canvas to container - only depends on container and canvas instance
+     * Uses stable wrapper functions that delegate to refs to avoid unnecessary re-mounts
      */
     useEffect(() => {
         if (!canvasContainer || !canvasInstance) {
@@ -280,6 +370,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         mountedRef.current = true;
 
         // Reset any stuck canvas modes to IDLE on mount
+        // IMPORTANT: Skip cancel() if canvas is in draw mode to prevent interrupting active drawing
         const currentMode = canvasInstance.mode();
         if (currentMode === 'zoom_canvas') {
             try {
@@ -293,8 +384,11 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             } catch (e) {
                 // Mode might have already changed
             }
+        } else if (!shouldPreserveDrawState(canvasInstance, stateRefs.current.activeControl)) {
+            // Only cancel if NOT in draw mode AND no draw operation is requested
+            // This prevents draw mode from being interrupted
+            canvasInstance.cancel();
         }
-        canvasInstance.cancel();
 
         // Set the active view ID on canvas for multiview annotation tracking
         if (typeof (canvasInstance as any).setViewId === 'function') {
@@ -309,19 +403,58 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // Fit canvas to container size
         canvasInstance.fitCanvas();
 
-        // Add event listeners
-        canvasHTML.addEventListener('canvas.drawn', onCanvasShapeDrawn);
-        canvasHTML.addEventListener('canvas.setup', onCanvasSetup);
-        canvasHTML.addEventListener('canvas.canceled', onCanvasCancel);
-        canvasHTML.addEventListener('canvas.zoomstart', onCanvasZoomStart);
-        canvasHTML.addEventListener('canvas.zoomstop', onCanvasZoomDone);
-        canvasHTML.addEventListener('canvas.dragstart', onCanvasDragStart);
-        canvasHTML.addEventListener('canvas.dragstop', onCanvasDragDone);
-        canvasHTML.addEventListener('canvas.clicked', onCanvasShapeClicked);
-        canvasHTML.addEventListener('canvas.deactivated', onCanvasShapeDeactivated);
-        canvasHTML.addEventListener('canvas.moved', onCanvasCursorMoved as EventListener);
-        canvasHTML.addEventListener('canvas.editdone', onCanvasEditDone);
-        canvasHTML.addEventListener('mousedown', onCanvasMouseDown);
+        // Create stable wrapper functions that delegate to refs
+        // This allows callbacks to update without triggering useEffect re-runs
+        const handleShapeDrawn = (e: any): void => {
+            eventHandlersRef.current.onShapeDrawn?.(e);
+        };
+        const handleSetup = (): void => {
+            eventHandlersRef.current.onSetup?.();
+        };
+        const handleCancel = (): void => {
+            eventHandlersRef.current.onCancel?.();
+        };
+        const handleZoomStart = (): void => {
+            eventHandlersRef.current.onZoomStart?.();
+        };
+        const handleZoomDone = (): void => {
+            eventHandlersRef.current.onZoomDone?.();
+        };
+        const handleDragStart = (): void => {
+            eventHandlersRef.current.onDragStart?.();
+        };
+        const handleDragDone = (): void => {
+            eventHandlersRef.current.onDragDone?.();
+        };
+        const handleShapeClicked = (e: any): void => {
+            eventHandlersRef.current.onShapeClicked?.(e);
+        };
+        const handleShapeDeactivated = (e: any): void => {
+            eventHandlersRef.current.onShapeDeactivated?.(e);
+        };
+        const handleCursorMoved = (e: any): void => {
+            eventHandlersRef.current.onCursorMoved?.(e);
+        };
+        const handleEditDone = (e: any): void => {
+            eventHandlersRef.current.onEditDone?.(e);
+        };
+        const handleMouseDown = (e: MouseEvent): void => {
+            eventHandlersRef.current.onMouseDown?.(e);
+        };
+
+        // Add event listeners with stable wrapper functions
+        canvasHTML.addEventListener('canvas.drawn', handleShapeDrawn);
+        canvasHTML.addEventListener('canvas.setup', handleSetup);
+        canvasHTML.addEventListener('canvas.canceled', handleCancel);
+        canvasHTML.addEventListener('canvas.zoomstart', handleZoomStart);
+        canvasHTML.addEventListener('canvas.zoomstop', handleZoomDone);
+        canvasHTML.addEventListener('canvas.dragstart', handleDragStart);
+        canvasHTML.addEventListener('canvas.dragstop', handleDragDone);
+        canvasHTML.addEventListener('canvas.clicked', handleShapeClicked);
+        canvasHTML.addEventListener('canvas.deactivated', handleShapeDeactivated);
+        canvasHTML.addEventListener('canvas.moved', handleCursorMoved as EventListener);
+        canvasHTML.addEventListener('canvas.editdone', handleEditDone);
+        canvasHTML.addEventListener('mousedown', handleMouseDown);
 
         // Setup ResizeObserver to handle container resize with debouncing
         // to prevent excessive fitCanvas calls that can clear annotations
@@ -336,8 +469,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         resizeObserverRef.current = new ResizeObserver(debouncedFitCanvas);
         resizeObserverRef.current.observe(canvasContainer);
 
-        // Initial setup with current frame data
-        if (stateRefs.current.frameData) {
+        // Initial setup with current frame data (only if not in draw mode or draw requested)
+        if (stateRefs.current.frameData && !shouldPreserveDrawState(canvasInstance, stateRefs.current.activeControl)) {
             const filteredAnnotations = filterAnnotations(stateRefs.current.annotations, {
                 frame: stateRefs.current.frameNumber,
                 workspace: stateRefs.current.workspace,
@@ -356,22 +489,25 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         }
 
         return () => {
-            // Cancel any active drawing when unmounting
-            canvasInstance.cancel();
+            // Only cancel if NOT in draw mode AND no draw operation is requested
+            // This prevents interrupting active drawing operations
+            if (!shouldPreserveDrawState(canvasInstance, stateRefs.current.activeControl)) {
+                canvasInstance.cancel();
+            }
 
             // Remove event listeners on cleanup
-            canvasHTML.removeEventListener('canvas.drawn', onCanvasShapeDrawn);
-            canvasHTML.removeEventListener('canvas.setup', onCanvasSetup);
-            canvasHTML.removeEventListener('canvas.canceled', onCanvasCancel);
-            canvasHTML.removeEventListener('canvas.zoomstart', onCanvasZoomStart);
-            canvasHTML.removeEventListener('canvas.zoomstop', onCanvasZoomDone);
-            canvasHTML.removeEventListener('canvas.dragstart', onCanvasDragStart);
-            canvasHTML.removeEventListener('canvas.dragstop', onCanvasDragDone);
-            canvasHTML.removeEventListener('canvas.clicked', onCanvasShapeClicked);
-            canvasHTML.removeEventListener('canvas.deactivated', onCanvasShapeDeactivated);
-            canvasHTML.removeEventListener('canvas.moved', onCanvasCursorMoved as EventListener);
-            canvasHTML.removeEventListener('canvas.editdone', onCanvasEditDone);
-            canvasHTML.removeEventListener('mousedown', onCanvasMouseDown);
+            canvasHTML.removeEventListener('canvas.drawn', handleShapeDrawn);
+            canvasHTML.removeEventListener('canvas.setup', handleSetup);
+            canvasHTML.removeEventListener('canvas.canceled', handleCancel);
+            canvasHTML.removeEventListener('canvas.zoomstart', handleZoomStart);
+            canvasHTML.removeEventListener('canvas.zoomstop', handleZoomDone);
+            canvasHTML.removeEventListener('canvas.dragstart', handleDragStart);
+            canvasHTML.removeEventListener('canvas.dragstop', handleDragDone);
+            canvasHTML.removeEventListener('canvas.clicked', handleShapeClicked);
+            canvasHTML.removeEventListener('canvas.deactivated', handleShapeDeactivated);
+            canvasHTML.removeEventListener('canvas.moved', handleCursorMoved as EventListener);
+            canvasHTML.removeEventListener('canvas.editdone', handleEditDone);
+            canvasHTML.removeEventListener('mousedown', handleMouseDown);
 
             // Disconnect resize observer
             if (resizeObserverRef.current) {
@@ -381,13 +517,20 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
             mountedRef.current = false;
         };
-    }, [canvasContainer, canvasInstance, activeViewId, onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown]);
+    }, [canvasContainer, canvasInstance, activeViewId]); // Minimized dependencies - callbacks use refs
 
     /**
      * Setup canvas with frame data when frame or annotations change
+     * IMPORTANT: Skip setup if canvas is in draw mode to avoid interrupting active drawing
      */
     useEffect(() => {
         if (!canvasInstance || !frameData || !mountedRef.current) {
+            return;
+        }
+
+        // Skip setup if canvas is in draw mode or draw operation is requested
+        // This preserves active drawing state - canvas will be updated when drawing completes
+        if (shouldPreserveDrawState(canvasInstance, activeControl)) {
             return;
         }
 
@@ -407,7 +550,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         });
 
         canvasInstance.setup(frameData, filteredAnnotations, curZLayer);
-    }, [canvasInstance, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace]);
+    }, [canvasInstance, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl]);
 
     /**
      * Update canvas viewId when active view changes
