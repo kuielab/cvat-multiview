@@ -1340,6 +1340,7 @@ def load_anno(file_object, annotations):
                     source="file",
                     shapes=[],
                     elements=[],
+                    view_id=int(el.attrib["view_id"]) if "view_id" in el.attrib else None,
                 )
             elif el.tag == "image":
                 image_is_opened = True
