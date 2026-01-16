@@ -592,6 +592,16 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
             };
         }
 
+        // For multiview mode (video overlay), we don't have actual image data
+        // Notify OBJECTS_UPDATED immediately so annotations render without waiting for frameData.data()
+        this.data.zLayer = zLayer;
+        this.data.objects = objectStates;
+        this.notify(UpdateReasons.OBJECTS_UPDATED);
+
+        // Capture viewId at setup time for async callback validation
+        // This prevents stale callbacks from overwriting imageSize after view switch
+        const setupViewId = this.data.viewId;
+
         const { zLayer: prevZLayer, objects: prevObjects } = this.data;
         frameData
             .data((): void => {
@@ -599,7 +609,9 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
                 this.notify(UpdateReasons.IMAGE_CHANGED);
             })
             .then((data: Image): void => {
-                if (frameData.number !== this.data.imageID) {
+                // Check both frame number AND viewId to handle view switches on same frame
+                // Without viewId check, View 1's async callback could overwrite View 2's imageSize
+                if (frameData.number !== this.data.imageID || setupViewId !== this.data.viewId) {
                     // check that request is still relevant after async image data fetching
                     return;
                 }

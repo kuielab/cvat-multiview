@@ -8,7 +8,7 @@ import Layout from 'antd/lib/layout';
 import Select from 'antd/lib/select';
 
 import { CombinedState, ActiveControl } from 'reducers';
-import { changeFrameAsync, switchPlay, updateActiveControl as updateActiveControlAction } from 'actions/annotation-actions';
+import { changeFrameAsync, switchPlay } from 'actions/annotation-actions';
 import ControlsSideBarContainer from 'containers/annotation-page/standard-workspace/controls-side-bar/controls-side-bar';
 import ObjectSideBarComponent from 'components/annotation-page/standard-workspace/objects-side-bar/objects-side-bar';
 import CanvasContextMenuContainer from 'containers/annotation-page/canvas/canvas-context-menu';
@@ -26,6 +26,20 @@ const PLAYBACK_RATE_OPTIONS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 const SYNC_THRESHOLD = 0.1; // Max allowed time difference in seconds
 const SYNC_INTERVAL = 500; // How often to check sync in ms
 
+// ActiveControl values that indicate a draw operation is requested/in progress
+const DRAW_ACTIVE_CONTROLS = [
+    ActiveControl.DRAW_RECTANGLE,
+    ActiveControl.DRAW_POLYGON,
+    ActiveControl.DRAW_POLYLINE,
+    ActiveControl.DRAW_POINTS,
+    ActiveControl.DRAW_ELLIPSE,
+    ActiveControl.DRAW_CUBOID,
+    ActiveControl.DRAW_SKELETON,
+    ActiveControl.DRAW_MASK,
+    ActiveControl.AI_TOOLS,
+    ActiveControl.OPENCV_TOOLS,
+];
+
 export default function MultiviewWorkspace(): JSX.Element {
     const [activeView, setActiveView] = useState<number>(1);
     const [audioEngine, setAudioEngine] = useState<any>(null);
@@ -41,6 +55,10 @@ export default function MultiviewWorkspace(): JSX.Element {
     const job = useSelector((state: CombinedState) => state.annotation.job.instance);
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
+    const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
+
+    // Track previous activeControl to detect transitions into draw mode
+    const prevActiveControlRef = useRef<ActiveControl>(activeControl);
 
     // Get FPS from multiview data, fallback to 30
     const fps = multiviewData?.videos?.view1?.fps || 30;
@@ -159,17 +177,31 @@ export default function MultiviewWorkspace(): JSX.Element {
         } else {
             stopSyncIntervalRef.current();
             pauseAllVideosRef.current();
-
-            // Reset canvas control state on pause to ensure draw mode works correctly
-            // after switching views. Without this, the canvas can get stuck in an
-            // inconsistent state after video playback.
-            dispatch(updateActiveControlAction(ActiveControl.CURSOR));
         }
 
         return () => {
             stopSyncIntervalRef.current();
         };
-    }, [playing, dispatch]);
+    }, [playing]);
+
+    // Auto-pause video when ENTERING draw mode (not when already in draw mode)
+    // This provides better UX - user can't draw while video is playing anyway
+    useEffect(() => {
+        const prevControl = prevActiveControlRef.current;
+        const wasInDrawMode = DRAW_ACTIVE_CONTROLS.includes(prevControl);
+        const isInDrawMode = DRAW_ACTIVE_CONTROLS.includes(activeControl);
+
+        // Only pause when transitioning INTO draw mode, not when already in it
+        if (playing && !wasInDrawMode && isInDrawMode) {
+            // Immediately pause videos (synchronous) - don't wait for Redux state change
+            pauseAllVideosRef.current();
+            // Also update Redux state to stay in sync
+            dispatch(switchPlay(false));
+        }
+
+        // Update ref for next comparison
+        prevActiveControlRef.current = activeControl;
+    }, [activeControl, playing, dispatch]);
 
     // Seek all videos when frame changes while NOT playing
     useEffect(() => {

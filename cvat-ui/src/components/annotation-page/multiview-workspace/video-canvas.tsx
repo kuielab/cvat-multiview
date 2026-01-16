@@ -80,10 +80,31 @@ export default function VideoCanvas(props: Props): JSX.Element {
         }
     }, [viewId, onVideoRef]);
 
-    // Use callback ref to notify parent immediately when DOM element is ready
+    // Use callback ref to notify parent when DOM element is ready AND video metadata is loaded
+    // Fix 3: Wait for video metadata to be loaded before calling callback
+    // This ensures videoDimensions will be valid when canvas setup runs
     const canvasContainerCallbackRef = useCallback((node: HTMLDivElement | null) => {
-        if (onCanvasContainerReady) {
-            onCanvasContainerReady(node, videoRef.current);
+        if (!onCanvasContainerReady) return;
+
+        const video = videoRef.current;
+
+        // If node is null (unmounting) or video is null, call callback immediately
+        if (!node || !video) {
+            onCanvasContainerReady(node, video);
+            return;
+        }
+
+        // Check if metadata already loaded
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+            // Metadata already loaded - call callback immediately
+            onCanvasContainerReady(node, video);
+        } else {
+            // Wait for metadata to load before calling callback
+            const handleMetadataLoaded = (): void => {
+                video.removeEventListener('loadedmetadata', handleMetadataLoaded);
+                onCanvasContainerReady(node, video);
+            };
+            video.addEventListener('loadedmetadata', handleMetadataLoaded);
         }
     }, [onCanvasContainerReady, isActive, viewId]);
 

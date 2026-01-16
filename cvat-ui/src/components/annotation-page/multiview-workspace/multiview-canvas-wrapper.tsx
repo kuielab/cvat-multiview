@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 
 import { Canvas } from 'cvat-canvas-wrapper';
@@ -18,39 +18,6 @@ import {
     removeObject as removeObjectAction,
 } from 'actions/annotation-actions';
 import { filterAnnotations } from 'utils/filter-annotations';
-
-/**
- * Create a proxy frameData that uses video dimensions instead of task metadata dimensions.
- * This is necessary for multiview mode where each view can have different video dimensions,
- * but the task metadata only stores dimensions for one source.
- *
- * The canvas uses frameData.width and frameData.height to set up its coordinate system.
- * Without this override, the coordinate transformation during drawing will be incorrect,
- * causing shapes to have wrong sizes relative to mouse movement.
- */
-function createVideoFrameDataProxy(originalFrameData: any, videoWidth: number, videoHeight: number): any {
-    if (!originalFrameData || videoWidth <= 0 || videoHeight <= 0) {
-        return originalFrameData;
-    }
-
-    // Create a proxy that overrides width/height but delegates everything else
-    return new Proxy(originalFrameData, {
-        get(target, prop) {
-            if (prop === 'width') {
-                return videoWidth;
-            }
-            if (prop === 'height') {
-                return videoHeight;
-            }
-            // For all other properties, delegate to original
-            const value = target[prop];
-            if (typeof value === 'function') {
-                return value.bind(target);
-            }
-            return value;
-        },
-    });
-}
 
 // Draw-related modes that should not be interrupted
 const DRAW_MODES: string[] = ['draw', 'draw_rect', 'draw_polygon', 'draw_polyline', 'draw_points', 'draw_ellipse', 'draw_cuboid', 'draw_skeleton', 'draw_mask'];
@@ -119,9 +86,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const mountedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
     const prevViewIdRef = useRef<number | null>(null);
-    // Use state for video dimensions so React re-renders when they become available
-    // This ensures canvas is re-setup with correct dimensions after video metadata loads
-    const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
     // Redux state selectors
     const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
@@ -167,39 +131,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             activeControl,
         };
     }, [activeLabelID, activeObjectType, frameNumber, activeViewId, jobInstance, annotations, curZLayer, frameData, workspace, activatedStateID, activeControl]);
-
-    /**
-     * Track video dimensions when videoElement changes.
-     * These dimensions are used to create a proxy frameData that overrides the
-     * task metadata dimensions with actual video dimensions for correct canvas
-     * coordinate transformation.
-     */
-    useEffect(() => {
-        if (!videoElement) {
-            setVideoDimensions({ width: 0, height: 0 });
-            return;
-        }
-
-        const updateDimensions = (): void => {
-            const { videoWidth, videoHeight } = videoElement;
-            if (videoWidth > 0 && videoHeight > 0) {
-                setVideoDimensions({ width: videoWidth, height: videoHeight });
-                console.log(`[MultiviewCanvas] Video dimensions updated: ${videoWidth}x${videoHeight}`);
-            }
-        };
-
-        // Update immediately if metadata is already loaded
-        if (videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
-            updateDimensions();
-        }
-
-        // Listen for metadata load
-        videoElement.addEventListener('loadedmetadata', updateDimensions);
-
-        return () => {
-            videoElement.removeEventListener('loadedmetadata', updateDimensions);
-        };
-    }, [videoElement]);
 
     // Refs for stable event handler references (to avoid useEffect dependency issues)
     const eventHandlersRef = useRef<{
@@ -275,9 +206,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // attribute initialization internally. Setting it here can cause validation
         // issues with non-integer attribute IDs.
         state.viewId = refs.activeViewId;
-
-        // Debug logging for SHAPE creation verification
-        console.log(`[onCanvasShapeDrawn] frame=${refs.frameNumber}, viewId=${refs.activeViewId}, objectType=${state.objectType}, shapeType=${state.shapeType}`);
 
         try {
             const objectState = new cvat.classes.ObjectState(state);
@@ -476,8 +404,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
             // Reset activeControl to CURSOR to ensure clean state for new view
             dispatch(updateActiveControlAction(ActiveControl.CURSOR));
-
-            console.log(`[MultiviewCanvas] View changed from ${prevViewIdRef.current} to ${activeViewId}, canvas mode reset`);
         }
 
         prevViewIdRef.current = activeViewId;
@@ -624,16 +550,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 return stateViewId === stateRefs.current.activeViewId;
             });
 
-            // Use video dimensions for canvas coordinate system if available
-            // This fixes Bug 1: drawing size mismatch due to frameData having task metadata
-            // dimensions instead of actual video dimensions
-            const effectiveFrameData = createVideoFrameDataProxy(
-                stateRefs.current.frameData,
-                videoDimensions.width,
-                videoDimensions.height,
-            );
-
-            canvasInstance.setup(effectiveFrameData, filteredAnnotations, stateRefs.current.curZLayer);
+            // Use original frameData dimensions (task metadata) for canvas coordinate system
+            // This ensures annotations are stored in the correct coordinate space (e.g., 1920x1080)
+            // even when the video element shows transcoded lower-resolution chunks (e.g., 320x240)
+            canvasInstance.setup(stateRefs.current.frameData, filteredAnnotations, stateRefs.current.curZLayer);
         }
 
         return () => {
@@ -668,6 +588,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         };
     }, [canvasContainer, canvasInstance, activeViewId]); // Minimized dependencies - callbacks use refs
 
+    // Track previous viewId for canvas setup effect (separate from prevViewIdRef used elsewhere)
+    const prevSetupViewIdRef = useRef<number | null>(null);
+
     /**
      * Setup canvas with frame data when frame or annotations change
      * IMPORTANT: Skip setup if canvas is in draw mode to avoid interrupting active drawing
@@ -677,11 +600,19 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
+        // Note: We use frameData dimensions (task metadata) for canvas coordinate system
+        // This ensures annotations are stored in the correct coordinate space (e.g., 1920x1080)
+        // even when the video element shows transcoded lower-resolution chunks (e.g., 320x240)
+
         // Skip setup if canvas is in draw mode or draw operation is requested
         // This preserves active drawing state - canvas will be updated when drawing completes
         if (shouldPreserveDrawState(canvasInstance, activeControl)) {
             return;
         }
+
+        // Check if viewId changed - need to recalculate canvas scale when view changes
+        // because canvas may be attached to different container with different size
+        const viewChanged = prevSetupViewIdRef.current !== null && prevSetupViewIdRef.current !== activeViewId;
 
         // Filter annotations for current view and exclude tags
         const filteredAnnotations = filterAnnotations(annotations, {
@@ -698,17 +629,27 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return stateViewId === activeViewId;
         });
 
-        // Use video dimensions for canvas coordinate system if available
-        // This fixes Bug 1: drawing size mismatch due to frameData having task metadata
-        // dimensions instead of actual video dimensions
-        const effectiveFrameData = createVideoFrameDataProxy(
-            frameData,
-            videoDimensions.width,
-            videoDimensions.height,
-        );
+        // Use original frameData dimensions (task metadata) for canvas coordinate system
+        // This ensures annotations are stored in the correct coordinate space (e.g., 1920x1080)
+        // even when the video element shows transcoded lower-resolution chunks (e.g., 320x240)
+        // The canvas handles the visual scaling between display and coordinate system internally
+        canvasInstance.setup(frameData, filteredAnnotations, curZLayer);
 
-        canvasInstance.setup(effectiveFrameData, filteredAnnotations, curZLayer);
-    }, [canvasInstance, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl, videoDimensions]);
+        // Call fitCanvas() and fit() AFTER setup() when view changes
+        // Order matters:
+        // 1. setup() sets imageSize from frameData
+        // 2. fitCanvas() sets canvasSize from container dimensions
+        // 3. fit() recalculates scale based on imageSize and canvasSize
+        // Without this sequence, view switching leaves stale scale/size from previous view
+        if (viewChanged) {
+            console.log('[Canvas Setup] Calling fitCanvas() and fit() for view:', activeViewId);
+            canvasInstance.fitCanvas();
+            canvasInstance.fit();
+        }
+
+        // Always update prevSetupViewIdRef after processing
+        prevSetupViewIdRef.current = activeViewId;
+    }, [canvasInstance, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl]);
 
     /**
      * Update canvas viewId when active view changes
