@@ -42,7 +42,7 @@ interface Canvas {
     merge(mergeData: MergeData): void;
     select(objectState: any): void;
 
-    fitCanvas(): void;
+    fitCanvas(width?: number, height?: number): void;
     bitmap(enable: boolean): void;
     selectRegion(enable: boolean): void;
     dragCanvas(enable: boolean): void;
@@ -89,8 +89,11 @@ class CanvasImpl implements Canvas {
         return this.view.setupConflictRegions(clientID);
     }
 
-    public fitCanvas(): void {
-        this.model.fitCanvas(this.view.html().clientWidth, this.view.html().clientHeight);
+    public fitCanvas(width?: number, height?: number): void {
+        // Use provided dimensions or fall back to view element dimensions
+        const w = width ?? this.view.html().clientWidth;
+        const h = height ?? this.view.html().clientHeight;
+        this.model.fitCanvas(w, h);
     }
 
     public bitmap(enable: boolean): void {

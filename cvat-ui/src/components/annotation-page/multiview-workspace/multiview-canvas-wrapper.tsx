@@ -449,18 +449,17 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             canvasInstance.cancel();
         }
 
-        // Set the active view ID on canvas for multiview annotation tracking
-        if (typeof (canvasInstance as any).setViewId === 'function') {
-            (canvasInstance as any).setViewId(activeViewId);
-        }
+        // Note: setViewId is handled in a separate effect that depends on activeViewId
 
         // Configure canvas for multiview mode
         canvasInstance.configure({
             forceDisableEditing: stateRefs.current.workspace === Workspace.REVIEW,
         });
 
-        // Fit canvas to container size
-        canvasInstance.fitCanvas();
+        // Fit canvas to container size - pass container dimensions explicitly
+        // because SVG element dimensions may not match container after view switch
+        canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
+        canvasInstance.fit(); // Recalculate scale based on new canvas size
 
         // Create stable wrapper functions that delegate to refs
         // This allows callbacks to update without triggering useEffect re-runs
@@ -527,8 +526,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             resizeObserverRef.current.disconnect();
         }
         const debouncedFitCanvas = debounce(() => {
-            if (mountedRef.current && canvasInstance) {
-                canvasInstance.fitCanvas();
+            if (mountedRef.current && canvasInstance && canvasContainer) {
+                canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
             }
         }, 100);
         resizeObserverRef.current = new ResizeObserver(debouncedFitCanvas);
@@ -586,7 +585,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
             mountedRef.current = false;
         };
-    }, [canvasContainer, canvasInstance, activeViewId]); // Minimized dependencies - callbacks use refs
+    }, [canvasContainer, canvasInstance]); // Remove activeViewId - viewId changes are handled by separate effects
 
     // Track previous viewId for canvas setup effect (separate from prevViewIdRef used elsewhere)
     const prevSetupViewIdRef = useRef<number | null>(null);
@@ -641,15 +640,14 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // 2. fitCanvas() sets canvasSize from container dimensions
         // 3. fit() recalculates scale based on imageSize and canvasSize
         // Without this sequence, view switching leaves stale scale/size from previous view
-        if (viewChanged) {
-            console.log('[Canvas Setup] Calling fitCanvas() and fit() for view:', activeViewId);
-            canvasInstance.fitCanvas();
+        if (viewChanged && canvasContainer) {
+            canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
             canvasInstance.fit();
         }
 
         // Always update prevSetupViewIdRef after processing
         prevSetupViewIdRef.current = activeViewId;
-    }, [canvasInstance, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl]);
+    }, [canvasInstance, canvasContainer, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl]);
 
     /**
      * Update canvas viewId when active view changes
