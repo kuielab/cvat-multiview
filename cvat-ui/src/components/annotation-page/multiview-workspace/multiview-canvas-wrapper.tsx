@@ -553,6 +553,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             // This ensures annotations are stored in the correct coordinate space (e.g., 1920x1080)
             // even when the video element shows transcoded lower-resolution chunks (e.g., 320x240)
             canvasInstance.setup(stateRefs.current.frameData, filteredAnnotations, stateRefs.current.curZLayer);
+
+            // CRITICAL: Call fitCanvas() and fit() AFTER setup() so imageOffset is calculated
+            // using imageSize (from frameData) instead of canvasSize (display container).
+            // This ensures correct coordinate transformation for drawing operations.
+            canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
+            canvasInstance.fit();
         }
 
         return () => {
@@ -634,14 +640,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // The canvas handles the visual scaling between display and coordinate system internally
         canvasInstance.setup(frameData, filteredAnnotations, curZLayer);
 
-        // Call fitCanvas() and fit() AFTER setup() when view changes
-        // Order matters:
-        // 1. setup() sets imageSize from frameData
-        // 2. fitCanvas() sets canvasSize from container dimensions
-        // 3. fit() recalculates scale based on imageSize and canvasSize
-        // Without this sequence, view switching leaves stale scale/size from previous view
-        if (viewChanged && canvasContainer) {
-            canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
+        // CRITICAL: Always call fit() AFTER setup() to ensure proper scale calculation
+        // setup() sets imageSize from frameData, and fit() recalculates scale based on
+        // both imageSize and canvasSize. Without this, scale can be incorrect (e.g., 10
+        // instead of ~0.225) when imageSize was 0x0 during initial fitCanvas()/fit() calls.
+        // When view changes, also call fitCanvas() to update canvasSize from new container.
+        if (canvasContainer) {
+            if (viewChanged) {
+                canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
+            }
             canvasInstance.fit();
         }
 

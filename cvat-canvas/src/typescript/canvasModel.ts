@@ -501,8 +501,16 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
         this.data.canvasSize.height = height;
         this.data.canvasSize.width = width;
 
+        // Use imageSize for offset calculation if already set (e.g., multiview mode where
+        // setup() is called before fitCanvas). This ensures offset is proportional to the
+        // actual image dimensions, not the potentially much smaller display container.
+        // If imageSize is not yet set, fall back to canvasSize (standard mode initialization).
+        const referenceSize = (this.data.imageSize.width > 0 && this.data.imageSize.height > 0)
+            ? this.data.imageSize
+            : this.data.canvasSize;
+
         this.data.imageOffset = Math.floor(
-            Math.max(this.data.canvasSize.height / FrameZoom.MIN, this.data.canvasSize.width / FrameZoom.MIN),
+            Math.max(referenceSize.height / FrameZoom.MIN, referenceSize.width / FrameZoom.MIN),
         );
 
         this.notify(UpdateReasons.FITTED_CANVAS);
