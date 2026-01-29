@@ -1711,6 +1711,20 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
         this.canvas.addEventListener('mousedown', (event): void => {
             if ([0, 1].includes(event.button)) {
+                // Check if clicking on a shape element - if so, don't enable canvas drag
+                // This allows individual shapes to be clicked/dragged without panning the canvas
+                const target = event.target as Element;
+                const isShapeElement = target.closest('.cvat_canvas_shape') !== null ||
+                    target.closest('.cvat_canvas_shape_drawing') !== null ||
+                    target.closest('.svg_select_points') !== null ||
+                    target.closest('.svg_select_points_rot') !== null;
+
+                // For left-click (button 0) on shapes, don't enable canvas drag
+                // Middle-click (button 1) and Alt+click should still enable drag for navigation
+                if (isShapeElement && event.button === 0 && !event.altKey) {
+                    return; // Don't enable drag when clicking on shapes
+                }
+
                 if (
                     [Mode.IDLE, Mode.DRAG_CANVAS, Mode.MERGE, Mode.SPLIT]
                         .includes(this.mode) || event.button === 1 || event.altKey

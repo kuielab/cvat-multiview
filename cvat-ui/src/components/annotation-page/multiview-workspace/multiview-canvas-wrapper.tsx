@@ -510,12 +510,44 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     /**
      * Handle canvas edit done - update annotation
+     * IMPORTANT: The state from event.detail may be a shallow copy (without save() method)
+     * if coordinate transformation was applied. We need to find the original ObjectState
+     * from Redux and update it.
      */
     const onCanvasEditDone = useCallback((event: any): void => {
+        const refs = stateRefs.current;
         const { state, points, rotation } = event.detail;
-        state.points = points;
-        state.rotation = rotation;
-        dispatch(updateAnnotationsAsync([state]));
+
+        // Find the original ObjectState from Redux annotations by clientID
+        // This is necessary because setup() may pass shallow copies with transformed coordinates
+        const originalState = refs.annotations.find(
+            (ann: ObjectState) => ann.clientID === state.clientID,
+        );
+
+        if (!originalState) {
+            console.error('[MultiviewCanvas] Could not find original state for clientID:', state.clientID);
+            return;
+        }
+
+        // Transform coordinates from canvas space back to task space if needed
+        const transformParams = transformParamsRef.current;
+        let updatedPoints = points;
+        if (transformParams && points && Array.isArray(points)) {
+            updatedPoints = transformPointsForStorage(
+                points,
+                transformParams.canvasHeight,
+                transformParams.taskHeight,
+            );
+        }
+
+        // Update the original ObjectState (which has the save() method)
+        if (originalState.rotation !== rotation) {
+            originalState.rotation = rotation;
+        } else {
+            originalState.points = updatedPoints;
+        }
+
+        dispatch(updateAnnotationsAsync([originalState]));
     }, [dispatch]);
 
     /**
@@ -707,7 +739,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         canvasHTML.addEventListener('canvas.clicked', handleShapeClicked);
         canvasHTML.addEventListener('canvas.deactivated', handleShapeDeactivated);
         canvasHTML.addEventListener('canvas.moved', handleCursorMoved as EventListener);
-        canvasHTML.addEventListener('canvas.editdone', handleEditDone);
+        canvasHTML.addEventListener('canvas.edited', handleEditDone);
 
         // IMPORTANT: Use capture phase for mousedown to intercept before canvasView's handlers
         // This prevents canvas drag (pan) on left-click without Alt key
@@ -822,7 +854,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             canvasHTML.removeEventListener('canvas.clicked', handleShapeClicked);
             canvasHTML.removeEventListener('canvas.deactivated', handleShapeDeactivated);
             canvasHTML.removeEventListener('canvas.moved', handleCursorMoved as EventListener);
-            canvasHTML.removeEventListener('canvas.editdone', handleEditDone);
+            canvasHTML.removeEventListener('canvas.edited', handleEditDone);
             canvasHTML.removeEventListener('mousedown', handleMouseDown, { capture: true });
             // Remove bubble phase listener from SVG content
             const svgContentCleanup = canvasHTML.querySelector('#cvat_canvas_content');
