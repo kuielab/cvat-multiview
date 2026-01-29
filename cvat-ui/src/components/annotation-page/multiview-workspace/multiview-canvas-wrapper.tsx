@@ -188,6 +188,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const curZLayer = useSelector((state: CombinedState) => state.annotation.annotations.zLayer.cur);
     const workspace = useSelector((state: CombinedState) => state.annotation.workspace);
     const activatedStateID = useSelector((state: CombinedState) => state.annotation.annotations.activatedStateID);
+    const activatedAttributeID = useSelector((state: CombinedState) => state.annotation.annotations.activatedAttributeID);
     const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
 
     // Use refs for values that change frequently but shouldn't cause remount
@@ -237,6 +238,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         onEditDone: ((e: any) => void) | null;
         onMouseDown: ((e: MouseEvent) => void) | null;
         onKeyDown: ((e: KeyboardEvent) => void) | null;
+        onWheel: ((e: WheelEvent) => void) | null;
     }>({
         onShapeDrawn: null,
         onSetup: null,
@@ -251,6 +253,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         onEditDone: null,
         onMouseDown: null,
         onKeyDown: null,
+        onWheel: null,
     });
 
     /**
@@ -359,10 +362,16 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [dispatch]);
 
     /**
-     * Handle canvas shape clicked - scroll sidebar to show the clicked item
+     * Handle canvas shape clicked - activate the shape and scroll sidebar to show the clicked item
      */
     const onCanvasShapeClicked = useCallback((e: any): void => {
         const { clientID, parentID } = e.detail.state;
+
+        // Dispatch activateObject to update Redux state, which triggers the useEffect
+        // that calls canvasInstance.activate() to show resize handles
+        dispatch(activateObject(clientID, null, null));
+
+        // Scroll the sidebar to show the clicked item
         let sidebarItem = null;
         if (Number.isInteger(parentID)) {
             sidebarItem = window.document.getElementById(`cvat-objects-sidebar-state-item-element-${clientID}`);
@@ -373,7 +382,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         if (sidebarItem) {
             sidebarItem.scrollIntoView();
         }
-    }, []);
+    }, [dispatch]);
 
     /**
      * Handle canvas shape deactivated
@@ -390,15 +399,90 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     /**
      * Handle mouse down on canvas - deactivate current object when clicking empty area
+     * Also prevents canvas drag (pan) on left-click without Alt key in Multiview workspace
+     *
+     * IMPORTANT: We use capture phase (capture: true) to intercept events before they
+     * reach SVG.js handlers. However, we must NOT block events when:
+     * 1. Clicking on shape elements (SVG.js needs to handle shape dragging)
+     * 2. Canvas is in draw mode (DrawHandler needs to receive mousedown to start drawing)
      */
     const onCanvasMouseDown = useCallback((e: MouseEvent): void => {
         const refs = stateRefs.current;
-        if ((e.target as HTMLElement).tagName === 'svg' && e.button !== 2) {
+        const target = e.target as Element;
+
+        // CRITICAL: Do NOT block events when canvas is in draw mode or draw operation is requested
+        // Drawing requires mousedown events on background to start drawing shapes
+        if (shouldPreserveDrawState(canvasInstance, refs.activeControl)) {
+            return; // Allow event propagation to DrawHandler
+        }
+
+        // Check if clicking on a shape element or its interactive parts
+        // These should NOT be blocked - SVG.js needs to handle shape dragging
+        // Includes: shape containers, resize/rotation handles, and direct SVG elements
+        const isShapeElement =
+            // Shape containers
+            target.closest('.cvat_canvas_shape') !== null ||
+            target.closest('.cvat_canvas_shape_drawing') !== null ||
+            // Resize/rotation handles (for activated shapes)
+            target.closest('.svg_select_points') !== null ||
+            target.closest('.svg_select_points_rot') !== null ||
+            // Direct SVG shape elements (rect, polygon, ellipse, path, circle)
+            // Also includes 'line' and 'g' for skeleton shapes
+            ['rect', 'polygon', 'polyline', 'ellipse', 'path', 'circle', 'line', 'g'].includes(
+                target.tagName.toLowerCase(),
+            );
+
+        // If clicking on a shape element, allow the event to propagate to SVG.js
+        // This is critical for individual shape dragging to work correctly
+        if (isShapeElement) {
+            return; // Allow event propagation to SVG.js handlers
+        }
+
+        // Check if clicking on SVG background (not on a shape)
+        const isSvgBackground = target.tagName.toLowerCase() === 'svg' ||
+            target.classList.contains('cvat_canvas_background');
+
+        // Left-click (button === 0) on canvas background without Alt key
+        // should NOT trigger canvas drag (pan) - stop propagation
+        // ONLY when NOT in draw mode (draw mode check is above)
+        if (isSvgBackground && e.button === 0 && !e.altKey) {
+            // Prevent canvas drag by stopping event propagation to canvasView's mousedown handler
+            // which enables drag on left-click in IDLE mode (see canvasView.ts:1712-1720)
+            e.stopPropagation();
+
+            // Deactivate any active object
+            if (refs.activatedStateID !== null) {
+                dispatch(activateObject(null, null, null));
+            }
+            return;
+        }
+
+        // Original logic: deactivate on SVG click (except right-click)
+        if (target.tagName.toLowerCase() === 'svg' && e.button !== 2) {
             if (refs.activatedStateID !== null) {
                 dispatch(activateObject(null, null, null));
             }
         }
-    }, [dispatch]);
+    }, [canvasInstance, dispatch]);
+
+    /**
+     * Handle wheel event on canvas - prevent canvas zoom
+     * Mouse wheel should NOT zoom the canvas in Multiview workspace
+     */
+    const handleWheel = useCallback((e: WheelEvent): void => {
+        e.preventDefault();
+        e.stopPropagation();
+    }, []);
+
+    /**
+     * Handle mousedown in bubble phase - this is now a no-op as canvasView.ts
+     * has been modified to check for shape elements before enabling canvas drag.
+     * Keeping this handler for potential future use or additional multiview-specific logic.
+     */
+    const onCanvasMouseDownBubble = useCallback((_e: MouseEvent): void => {
+        // Canvas drag prevention for shapes is now handled directly in canvasView.ts
+        // See canvasView.ts mousedown handler which checks isShapeElement
+    }, []);
 
     /**
      * Handle cursor moved on canvas - activate object under cursor
@@ -481,9 +565,11 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             onCursorMoved: onCanvasCursorMoved,
             onEditDone: onCanvasEditDone,
             onMouseDown: onCanvasMouseDown,
+            onMouseDownBubble: onCanvasMouseDownBubble,
             onKeyDown,
+            onWheel: handleWheel,
         };
-    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown, onKeyDown]);
+    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown, onCanvasMouseDownBubble, onKeyDown, handleWheel]);
 
     /**
      * Handle view changes - ALWAYS reset canvas mode when switching views
@@ -600,8 +686,14 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const handleMouseDown = (e: MouseEvent): void => {
             eventHandlersRef.current.onMouseDown?.(e);
         };
+        const handleMouseDownBubble = (e: MouseEvent): void => {
+            eventHandlersRef.current.onMouseDownBubble?.(e);
+        };
         const handleKeyDown = (e: KeyboardEvent): void => {
             eventHandlersRef.current.onKeyDown?.(e);
+        };
+        const handleWheelWrapper = (e: WheelEvent): void => {
+            eventHandlersRef.current.onWheel?.(e);
         };
 
         // Add event listeners with stable wrapper functions
@@ -616,7 +708,20 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         canvasHTML.addEventListener('canvas.deactivated', handleShapeDeactivated);
         canvasHTML.addEventListener('canvas.moved', handleCursorMoved as EventListener);
         canvasHTML.addEventListener('canvas.editdone', handleEditDone);
-        canvasHTML.addEventListener('mousedown', handleMouseDown);
+
+        // IMPORTANT: Use capture phase for mousedown to intercept before canvasView's handlers
+        // This prevents canvas drag (pan) on left-click without Alt key
+        canvasHTML.addEventListener('mousedown', handleMouseDown, { capture: true });
+
+        // Add bubble phase handler on SVG content for potential future multiview-specific logic
+        // NOTE: Canvas drag prevention for shapes is now handled directly in canvasView.ts
+        const svgContent = canvasHTML.querySelector('#cvat_canvas_content');
+        if (svgContent) {
+            svgContent.addEventListener('mousedown', handleMouseDownBubble, { capture: false });
+        }
+
+        // IMPORTANT: Use capture phase and passive: false for wheel to intercept and prevent canvas zoom
+        canvasHTML.addEventListener('wheel', handleWheelWrapper, { passive: false, capture: true });
 
         // Add keydown listener to document for Delete key support
         document.addEventListener('keydown', handleKeyDown);
@@ -718,7 +823,13 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             canvasHTML.removeEventListener('canvas.deactivated', handleShapeDeactivated);
             canvasHTML.removeEventListener('canvas.moved', handleCursorMoved as EventListener);
             canvasHTML.removeEventListener('canvas.editdone', handleEditDone);
-            canvasHTML.removeEventListener('mousedown', handleMouseDown);
+            canvasHTML.removeEventListener('mousedown', handleMouseDown, { capture: true });
+            // Remove bubble phase listener from SVG content
+            const svgContentCleanup = canvasHTML.querySelector('#cvat_canvas_content');
+            if (svgContentCleanup) {
+                svgContentCleanup.removeEventListener('mousedown', handleMouseDownBubble, { capture: false });
+            }
+            canvasHTML.removeEventListener('wheel', handleWheelWrapper, { capture: true });
             document.removeEventListener('keydown', handleKeyDown);
 
             // Disconnect resize observer
@@ -838,6 +949,26 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             (canvasInstance as any).setViewId(activeViewId);
         }
     }, [canvasInstance, activeViewId]);
+
+    /**
+     * Activate shape on canvas when activatedStateID changes in Redux
+     * This shows resize handles and enables dragging for the selected shape
+     */
+    useEffect(() => {
+        if (!canvasInstance) {
+            return;
+        }
+
+        // Find the activated state to check if it's a valid annotation (not a tag)
+        const activatedState = annotations.find(
+            (state: ObjectState) => state.clientID === activatedStateID,
+        );
+
+        // Only activate if it's a valid annotation (not a tag) or if deactivating (null)
+        if (activatedStateID === null || (activatedState && activatedState.objectType !== ObjectType.TAG)) {
+            canvasInstance.activate(activatedStateID, activatedAttributeID);
+        }
+    }, [canvasInstance, activatedStateID, activatedAttributeID, annotations]);
 
     // Note: Removed the activeControl effect that was calling canvasInstance.cancel()
     // when activeControl changed to a draw mode. This was causing the drawing to be
