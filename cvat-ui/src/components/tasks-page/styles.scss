@@ -181,3 +181,13 @@
 .cvat-item-task-name {
     @extend .cvat-text-color;
 }
+
+.cvat-tasks-page-actions {
+    display: flex;
+    align-items: center;
+    gap: $grid-unit-size;
+}
+
+.cvat-export-tasks-button {
+    margin-right: $grid-unit-size;
+}

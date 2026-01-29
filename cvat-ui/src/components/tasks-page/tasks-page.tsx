@@ -130,6 +130,7 @@ function TasksPageComponent(props: Readonly<Props>): JSX.Element {
                 importing={importing}
                 selectedCount={selectedCount}
                 onSelectAll={onSelectAll}
+                tasks={currentTasks}
             />
             { fetching && !bulkFetching ? (
                 <div className='cvat-empty-tasks-list'>

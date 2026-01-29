@@ -111,3 +111,12 @@
         transform: translate(-50%, -50%);
     }
 }
+
+.cvat-requests-header-row {
+    margin-bottom: $grid-unit-size;
+    width: 100%;
+}
+
+.cvat-requests-download-button {
+    margin-right: $grid-unit-size;
+}

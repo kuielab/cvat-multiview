@@ -3,16 +3,19 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useState, useEffect } from 'react';
-import { useDispatch } from 'react-redux';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { useDispatch, useSelector, shallowEqual } from 'react-redux';
 import { useHistory } from 'react-router';
 
 import { Row, Col } from 'antd/lib/grid';
 import Popover from 'antd/lib/popover';
-import { LoadingOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import { ExportOutlined, LoadingOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import Button from 'antd/lib/button';
 import Input from 'antd/lib/input';
 import { importActions } from 'actions/import-actions';
+import { exportActions } from 'actions/export-actions';
+import { CombinedState } from 'reducers';
+import { Task } from 'cvat-core-wrapper';
 import {
     SortingComponent,
     ResourceFilterHOC,
@@ -40,23 +43,48 @@ interface VisibleTopBarProps {
     importing: boolean;
     selectedCount: number;
     onSelectAll: () => void;
+    tasks: Task[];
 }
 
 export default function TopBarComponent(props: Readonly<VisibleTopBarProps>): JSX.Element {
     const dispatch = useDispatch();
     const {
         importing, query, onApplyFilter, onApplySorting, onApplySearch,
-        selectedCount, onSelectAll,
+        selectedCount, onSelectAll, tasks,
     } = props;
     const [visibility, setVisibility] = useState(defaultVisibility);
     const history = useHistory();
     const prevImporting = usePrevious(importing);
+
+    // Get selected task IDs from Redux
+    const selectedIds = useSelector((state: CombinedState) => state.tasks.selected, shallowEqual);
 
     useEffect(() => {
         if (prevImporting && !importing) {
             onApplyFilter(query.filter);
         }
     }, [importing]);
+
+    // Determine if there's a selection
+    const hasSelection = selectedIds.length > 0;
+
+    // Get selected tasks
+    const selectedTasks = useMemo(() => {
+        if (!hasSelection) return [];
+        return tasks.filter((task) => selectedIds.includes(task.id));
+    }, [tasks, selectedIds, hasSelection]);
+
+    // Only export selected tasks (no "export all" when nothing selected)
+    const exportCount = selectedTasks.length;
+
+    // Export handler (selected only)
+    const onExport = useCallback(() => {
+        if (exportCount === 0) return;
+        dispatch(exportActions.openExportDatasetModal(selectedTasks[0]));
+    }, [selectedTasks, exportCount, dispatch]);
+
+    // Button label: "Export" when nothing selected, "Export (N)" when selected
+    const exportButtonLabel = hasSelection ? `Export (${exportCount})` : 'Export';
 
     return (
         <Row className='cvat-tasks-page-top-bar' justify='center' align='middle'>
@@ -102,7 +130,15 @@ export default function TopBarComponent(props: Readonly<VisibleTopBarProps>): JS
                         />
                     </div>
                 </div>
-                <div>
+                <div className='cvat-tasks-page-actions'>
+                    <Button
+                        className='cvat-export-tasks-button'
+                        icon={<ExportOutlined />}
+                        onClick={onExport}
+                        disabled={!hasSelection}
+                    >
+                        {exportButtonLabel}
+                    </Button>
                     <Popover
                         trigger={['click']}
                         destroyTooltipOnHide

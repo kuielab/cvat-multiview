@@ -1,4 +1,12 @@
 /.claude/
 /.venv/
 /.vscode/
+/.idea/
 CLAUDE.md
+
+# Build outputs
+**/dist/
+!cvat-ui/dist/favicon.ico
+**/node_modules/
+**/__pycache__/
+/.playwright-mcp/

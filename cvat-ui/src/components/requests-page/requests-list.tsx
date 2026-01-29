@@ -2,15 +2,17 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useCallback } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { shallowEqual, useDispatch, useSelector } from 'react-redux';
 import dayjs from 'dayjs';
 import { CombinedState, RequestsQuery, SelectedResourceType } from 'reducers';
 
 import { Row, Col } from 'antd/lib/grid';
 import Pagination from 'antd/lib/pagination';
+import Button from 'antd/lib/button';
+import { DownloadOutlined } from '@ant-design/icons';
 
-import { Request } from 'cvat-core-wrapper';
+import { Request, RQStatus } from 'cvat-core-wrapper';
 import { requestsActions } from 'actions/requests-actions';
 
 import dimensions from 'utils/dimensions';
@@ -34,10 +36,11 @@ function RequestsList(props: Readonly<Props>): JSX.Element {
     const dispatch = useDispatch();
     const { query, count } = props;
     const { page, pageSize } = query;
-    const { requests, cancelled, selectedCount } = useSelector((state: CombinedState) => ({
+    const { requests, cancelled, selectedCount, selectedIds } = useSelector((state: CombinedState) => ({
         requests: state.requests.requests,
         cancelled: state.requests.cancelled,
         selectedCount: state.requests.selected.length,
+        selectedIds: state.requests.selected,
     }), shallowEqual);
 
     const requestList = Object.values(requests);
@@ -47,11 +50,59 @@ function RequestsList(props: Readonly<Props>): JSX.Element {
         dispatch(selectionActions.selectResources(requestIds, SelectedResourceType.REQUESTS));
     }, [requestIds]);
 
+    // Filter all downloadable requests (finished with URL, not cancelled)
+    const allDownloadableRequests = useMemo(() => requestList.filter((request: Request) => (
+        request.status === RQStatus.FINISHED &&
+            !!request.url &&
+            !cancelled[request.id]
+    )), [requestList, cancelled]);
+
+    // Filter selected downloadable requests
+    const selectedDownloadableRequests = useMemo(() => {
+        if (selectedIds.length === 0) return [];
+        return allDownloadableRequests.filter((request) => selectedIds.includes(request.id));
+    }, [allDownloadableRequests, selectedIds]);
+
+    // Only download selected items (no "download all" when nothing selected)
+    const hasSelection = selectedIds.length > 0;
+    const downloadableCount = selectedDownloadableRequests.length;
+
+    // Download handler (selected only)
+    const onDownload = useCallback(() => {
+        if (downloadableCount === 0) return;
+
+        selectedDownloadableRequests.forEach((request) => {
+            const downloadAnchor = window.document.getElementById('downloadAnchor') as HTMLAnchorElement | null;
+            if (downloadAnchor && request.url) {
+                downloadAnchor.href = request.url;
+                downloadAnchor.click();
+            }
+        });
+    }, [selectedDownloadableRequests, downloadableCount]);
+
+    // Button label: "Download" when nothing selected, "Download (N)" when selected
+    const downloadButtonLabel = hasSelection ? `Download (${downloadableCount})` : 'Download';
+
     return (
         <>
             <Row justify='center'>
                 <Col {...dimensions}>
-                    <ResourceSelectionInfo selectedCount={selectedCount} onSelectAll={onSelectAll} />
+                    <Row justify='space-between' align='middle' className='cvat-requests-header-row'>
+                        <Col>
+                            <ResourceSelectionInfo selectedCount={selectedCount} onSelectAll={onSelectAll} />
+                        </Col>
+                        <Col>
+                            <Button
+                                className='cvat-requests-download-button'
+                                type='primary'
+                                icon={<DownloadOutlined />}
+                                disabled={!hasSelection || downloadableCount === 0}
+                                onClick={onDownload}
+                            >
+                                {downloadButtonLabel}
+                            </Button>
+                        </Col>
+                    </Row>
                 </Col>
             </Row>
             <Row justify='center' className='cvat-resource-list-wrapper'>
