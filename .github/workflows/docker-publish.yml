@@ -3,6 +3,40 @@ name: Build and Push Docker Images
 on:
   push:
     branches: [master]
+    paths:
+      # Server (Backend)
+      - 'Dockerfile'
+      - 'cvat/**'
+      - 'supervisord/**'
+      - 'utils/**'
+      - 'backend_entrypoint.sh'
+      - 'wait_for_deps.sh'
+      - 'manage.py'
+      - 'rqscheduler.py'
+      # UI (Frontend)
+      - 'Dockerfile.ui'
+      - 'cvat-ui/**'
+      - 'cvat-core/**'
+      - 'cvat-canvas/**'
+      - 'cvat-canvas3d/**'
+      - 'cvat-data/**'
+      - 'package.json'
+      - 'yarn.lock'
+      - '.yarnrc.yml'
+    paths-ignore:
+      # Documentation
+      - '**/*.md'
+      - 'docs/**'
+      # Config files that don't affect build
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
+      - '.vscode/**'
+      - '.idea/**'
+      # Test files
+      - 'tests/**'
+      - '**/*.test.*'
+      - '**/*.spec.*'
   workflow_dispatch:  # 수동 실행 가능
 
 env:
