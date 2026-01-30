@@ -84,6 +84,9 @@ services:
   cvat_server:
     container_name: cvat_server
     image: cvat/server:${CVAT_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: always
     depends_on:
       <<: *backend-deps
@@ -249,6 +252,9 @@ services:
   cvat_ui:
     container_name: cvat_ui
     image: cvat/ui:${CVAT_VERSION:-dev}
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
     restart: always
     depends_on:
       - cvat_server
