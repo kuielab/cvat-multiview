@@ -53,6 +53,40 @@ from typing import List, Tuple, Optional, Set, Dict
 from dataclasses import dataclass, field
 
 
+def parse_session_range(range_str: str) -> List[str]:
+    """
+    세션 범위 문자열을 세션 ID 리스트로 변환
+
+    예: "00-10" -> ["00", "01", ..., "10"]
+        "5-15" -> ["05", "06", ..., "15"]
+    """
+    if '-' in range_str:
+        parts = range_str.split('-')
+        if len(parts) == 2:
+            start, end = parts
+            # 자릿수 유지 (예: "00" -> 2자리)
+            width = max(len(start), len(end))
+            start_num = int(start)
+            end_num = int(end)
+            return [str(i).zfill(width) for i in range(start_num, end_num + 1)]
+    return [range_str]
+
+
+def parse_sessions_arg(sessions: List[str]) -> Set[str]:
+    """
+    세션 인자를 파싱하여 세션 ID Set 반환
+
+    지원 형식:
+    - 단일 값: ["00", "01", "02"]
+    - 범위: ["00-10", "20-30"]
+    - 혼합: ["00-05", "10", "15-20"]
+    """
+    result = set()
+    for s in sessions:
+        result.update(parse_session_range(s))
+    return result
+
+
 # 기본 설정
 DEFAULT_HOST = "http://localhost:8080"
 DEFAULT_SPLITS = ["test", "train"]
@@ -118,7 +152,9 @@ def get_auth_session(host: str, username: str, password: str) -> Optional[reques
 def discover_video_sets(
     data_dir: Path,
     splits: List[str],
-    min_views: int = 1
+    min_views: int = 1,
+    sessions: Optional[Set[str]] = None,
+    split_ids: Optional[Set[str]] = None
 ) -> List[VideoSet]:
     """
     디렉토리에서 비디오 세트 자동 탐지
@@ -128,8 +164,17 @@ def discover_video_sets(
     - Train: split[SPLIT_ID]_id[VIEW_ID]_s[SESSION_ID]_recid[REC_ID]_[PART].mp4
 
     세트 정의: SPLIT_ID + SESSION_ID + REC_ID가 동일한 파일들
+
+    Args:
+        sessions: 필터링할 세션 ID Set. None이면 모든 세션 포함
+        split_ids: 필터링할 split ID Set (예: {"5", "6"}). None이면 모든 split_id 포함
     """
     video_sets = []
+
+    if sessions:
+        print(f"  Session filter: {sorted(sessions)}")
+    if split_ids:
+        print(f"  Split ID filter: {sorted(split_ids)}")
 
     # Test pattern: split8_id00_s01_recid008.mp4
     # Groups: (1)SPLIT_ID, (2)VIEW_ID, (3)SESSION_ID, (4)REC_ID
@@ -198,6 +243,14 @@ def discover_video_sets(
         # 각 그룹에서 VideoSet 생성
         valid_sets = 0
         for (split_id, session_id, rec_id, part), view_files in sorted(groups.items()):
+            # 세션 필터링
+            if sessions and session_id not in sessions:
+                continue
+
+            # split_id 필터링
+            if split_ids and split_id not in split_ids:
+                continue
+
             if len(view_files) >= min_views:
                 # VIEW_ID 순으로 정렬
                 sorted_views = sorted(view_files, key=lambda x: x[0])
@@ -221,7 +274,8 @@ def create_multiview_task(
     host: str,
     session: requests.Session,
     video_set: VideoSet,
-    labels: List[dict] = None
+    labels: List[dict] = None,
+    org: str = None
 ) -> Optional[dict]:
     """
     Multiview task 생성
@@ -261,11 +315,13 @@ def create_multiview_task(
             'view_count': str(len(video_set.views)),
         }
 
-        # CSRF 토큰 추가
+        # CSRF 토큰 및 Organization 헤더 추가
         headers = {}
         csrf_token = session.cookies.get('csrftoken')
         if csrf_token:
             headers['X-CSRFToken'] = csrf_token
+        if org:
+            headers['X-Organization'] = org
 
         print("Sending request...")
         response = session.post(
@@ -332,6 +388,7 @@ Examples:
     parser.add_argument('--user', '-u', required=True, help='CVAT username')
     parser.add_argument('--password', '-p', required=True, help='CVAT password')
     parser.add_argument('--host', default=DEFAULT_HOST, help=f'CVAT host (default: {DEFAULT_HOST})')
+    parser.add_argument('--org', help='Organization slug (tasks will be shared with org members)')
 
     # 데이터 경로
     parser.add_argument('--data-dir', '-d', required=True,
@@ -341,6 +398,14 @@ Examples:
     parser.add_argument('--splits', nargs='+', default=DEFAULT_SPLITS,
                         help=f'Splits to process (default: {" ".join(DEFAULT_SPLITS)})')
 
+    # split_id 필터링 (파일명의 split[N] 부분)
+    parser.add_argument('--split-ids', nargs='+',
+                        help='Split IDs to include (e.g., 5 6 7 or 5-7 for range). From filename split[N]_...')
+
+    # 세션 필터링
+    parser.add_argument('--sessions', nargs='+',
+                        help='Session IDs to include (e.g., 01 02 03 or 01-10 for range)')
+
     # 옵션
     parser.add_argument('--min-views', type=int, default=1,
                         help='Minimum number of views per set (default: 1)')
@@ -349,6 +414,18 @@ Examples:
                         help='Show what would be created without actually creating')
 
     args = parser.parse_args()
+
+    # 세션 필터 파싱
+    sessions_filter = None
+    if args.sessions:
+        sessions_filter = parse_sessions_arg(args.sessions)
+        print(f"Session filter: {sorted(sessions_filter)}")
+
+    # split_id 필터 파싱
+    split_ids_filter = None
+    if args.split_ids:
+        split_ids_filter = parse_sessions_arg(args.split_ids)  # 같은 범위 파싱 함수 사용
+        print(f"Split ID filter: {sorted(split_ids_filter)}")
 
     data_dir = Path(args.data_dir)
     if not data_dir.exists():
@@ -362,7 +439,9 @@ Examples:
     video_sets = discover_video_sets(
         data_dir=data_dir,
         splits=args.splits,
-        min_views=args.min_views
+        min_views=args.min_views,
+        sessions=sessions_filter,
+        split_ids=split_ids_filter
     )
 
     if not video_sets:
@@ -416,7 +495,8 @@ Examples:
         result = create_multiview_task(
             host=args.host,
             session=session,
-            video_set=vs
+            video_set=vs,
+            org=args.org
         )
 
         if result:

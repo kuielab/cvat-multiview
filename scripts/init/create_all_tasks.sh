@@ -20,6 +20,7 @@ DRY_RUN=""
 USER=""
 PASSWORD=""
 LIMIT=""
+ORG=""
 
 # 색상 정의
 RED='\033[0;31m'
@@ -52,12 +53,14 @@ Usage: $0 --user USERNAME --password PASSWORD [OPTIONS]
 선택 옵션:
   --data-dir, -d    데이터셋 루트 경로 (기본값: /mnt/data)
   --host            CVAT 서버 URL (기본값: http://localhost:8080)
+  --org             Organization slug (tasks will be shared with org members)
   --limit           생성할 최대 task 수
   --dry-run         실제 생성 없이 미리보기
   --help, -h        도움말 출력
 
 예시:
   $0 --user admin --password admin123
+  $0 --user admin --password admin123 --org ielab
   $0 --user admin --password admin123 --dry-run
   $0 --user admin --password admin123 --data-dir /mnt/data --limit 10
 EOF
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --host)
             HOST="$2"
+            shift 2
+            ;;
+        --org)
+            ORG="--org $2"
             shift 2
             ;;
         --limit)
@@ -138,6 +145,28 @@ find_python() {
     return 1
 }
 
+# pip 찾기
+find_pip() {
+    local python="$1"
+
+    # pip 모듈로 실행 시도
+    if $python -m pip --version &> /dev/null; then
+        echo "$python -m pip"
+        return 0
+    fi
+
+    # pip3, pip 명령어 시도
+    local pip_paths=("pip3" "pip")
+    for pip in "${pip_paths[@]}"; do
+        if command -v "$pip" &> /dev/null; then
+            echo "$pip"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # 의존성 설치
 install_dependencies() {
     local python="$1"
@@ -147,7 +176,16 @@ install_dependencies() {
     # requests 모듈 확인
     if ! $python -c "import requests" 2>/dev/null; then
         log_warn "requests 모듈이 없습니다. 설치를 시도합니다..."
-        if $python -m pip install requests --quiet; then
+
+        local pip_cmd
+        pip_cmd=$(find_pip "$python")
+        if [[ -z "$pip_cmd" ]]; then
+            log_error "pip를 찾을 수 없습니다."
+            log_error "수동으로 설치해주세요: pip install requests"
+            exit 1
+        fi
+
+        if $pip_cmd install requests --quiet 2>/dev/null || $pip_cmd install requests 2>/dev/null; then
             log_info "requests 설치 완료"
         else
             log_error "requests 설치 실패. 수동으로 설치해주세요: pip install requests"
@@ -245,7 +283,7 @@ main() {
     echo ""
 
     # 공통 옵션
-    COMMON_OPTS="--user $USER --password $PASSWORD --host $HOST --data-dir $DATA_DIR $LIMIT $DRY_RUN"
+    COMMON_OPTS="--user $USER --password $PASSWORD --host $HOST --data-dir $DATA_DIR $ORG $LIMIT $DRY_RUN"
 
     # Multisensor Home Tasks 생성
     if [[ -d "$DATA_DIR/multisensor_home1" ]] || [[ -d "$DATA_DIR/multisensor_home2" ]]; then

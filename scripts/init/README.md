@@ -6,37 +6,119 @@ Multiview Task 생성 및 테스트를 위한 유틸리티 스크립트 모음�
 
 ```
 scripts/init/
-├── create_all_tasks.sh           # 통합 실행 스크립트
-├── create_multisensor_home_tasks.py
-├── create_mmoffice_tasks.py
-├── create_multiview_task.py
-├── create_multiview_tasks.py
-├── check_environment.py
-├── quick_test.py
+├── setup_cvat.sh                     # 초기 설정 (Superuser + Organization + Users)
+├── create_all_tasks.sh               # 모든 Task 일괄 생성
+├── assign_tasks_to_orgs.sh           # 범위별로 Organization에 Task 할당
+├── create_multisensor_home_tasks.py  # Home 데이터셋 Task 생성
+├── create_mmoffice_tasks.py          # MMOffice 데이터셋 Task 생성
+├── create_multiview_task.py          # 단일 Task 생성
+├── create_multiview_tasks.py         # 범용 배치 Task 생성
+├── check_environment.py              # 환경 체크
+├── quick_test.py                     # 빠른 테스트
 └── README.md
 ```
 
-## 빠른 시작
+---
 
-### create_all_tasks.sh
+## 데이터셋 구조 및 필터링 기준
 
-**모든 데이터셋의 Multiview Task를 한 번에 생성하는 통합 스크립트입니다.**
+### Multisensor Home
 
-Multisensor Home과 MMOffice 데이터셋을 자동으로 탐지하여 task를 생성합니다.
-Python 및 의존성 패키지 설치 여부를 자동으로 확인하고, 필요시 설치합니다.
+```
+/mnt/data/
+├── multisensor_home1/
+│   ├── 01/                    # subdir
+│   │   ├── 00-View1-Part1.mp4 # session 00-24
+│   │   ├── 00-View2-Part1.mp4
+│   │   └── ...
+│   └── 02/                    # subdir
+│       └── 25-View1-Part1.mp4 # session 25-58
+└── multisensor_home2/
+    ├── 01/                    # session 00-30
+    └── 02/                    # session 31-61
+```
+
+| 필터 | 옵션 | 값 | 설명 |
+|------|------|-----|------|
+| datasets | `--datasets` | `multisensor_home1`, `multisensor_home2` | 데이터셋 선택 |
+| subdirs | `--subdirs` | `01`, `02` | 서브디렉토리 선택 |
+| sessions | `--sessions` | `00-58` (home1), `00-61` (home2) | 세션 ID 범위 |
+
+### MMOffice
+
+```
+/mnt/data/mmoffice/video/
+├── test/
+│   └── split8_id00_s01_recid008.mp4
+└── train/
+    └── split5_id00_s01_recid000_0.mp4
+         │     │   │    │       └── part (0, 1)
+         │     │   │    └── rec_id
+         │     │   └── session_id (01-12)
+         │     └── view_id (00-03)
+         └── split_id (2-7)
+```
+
+| 필터 | 옵션 | 값 | 설명 |
+|------|------|-----|------|
+| splits | `--splits` | `test`, `train` | test/train 선택 |
+| split-ids | `--split-ids` | `2-7` | 파일명의 split[N] 필터 |
+| sessions | `--sessions` | `01-12` | 세션 ID 범위 |
+
+---
+
+## Shell 스크립트
+
+### 1. setup_cvat.sh - 초기 설정
+
+**CVAT 초기 설정을 수행합니다. (Task 생성 제외)**
 
 ```bash
-# scripts/init 디렉토리에서 실행
-cd /path/to/cvat-multiview/scripts/init
+# 대화형 실행
+./scripts/init/setup_cvat.sh
 
-# 기본 실행 (모든 데이터셋)
+# Superuser 이미 있는 경우
+./scripts/init/setup_cvat.sh --skip-superuser
+
+# EC2 등 다른 서버
+CVAT_HOST=http://3.36.160.76:8080 ./scripts/init/setup_cvat.sh
+```
+
+**기능:**
+- Superuser 계정 생성 (docker compose exec)
+- Organization 생성 (여러 개 가능)
+- 일반 유저 생성 (여러 명 가능)
+- 유저를 Organization에 초대
+
+**옵션:**
+| 옵션 | 설명 |
+|------|------|
+| `--skip-superuser` | Superuser 생성 단계 건너뛰기 |
+
+**환경변수:**
+| 환경변수 | 설명 | 기본값 |
+|----------|------|--------|
+| `CVAT_HOST` | CVAT 서버 URL | `http://localhost:8080` |
+
+---
+
+### 2. create_all_tasks.sh - 전체 Task 생성
+
+**모든 데이터셋의 Multiview Task를 한 번에 생성합니다.**
+
+```bash
+# 기본 실행
 ./create_all_tasks.sh --user admin --password admin123
 
-# dry-run으로 미리보기
+# Organization 지정
+./create_all_tasks.sh --user admin --password admin123 --org ielab
+
+# dry-run 미리보기
 ./create_all_tasks.sh --user admin --password admin123 --dry-run
 
 # 커스텀 데이터 경로
-./create_all_tasks.sh --user admin --password admin123 --data-dir /mnt/data
+./create_all_tasks.sh --user admin --password admin123 \
+    --data-dir /mnt/data
 
 # task 수 제한
 ./create_all_tasks.sh --user admin --password admin123 --limit 10
@@ -49,22 +131,260 @@ cd /path/to/cvat-multiview/scripts/init
 | `--password`, `-p` | CVAT 비밀번호 | (필수) |
 | `--data-dir`, `-d` | 데이터셋 루트 경로 | `/mnt/data` |
 | `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug | - |
 | `--limit` | 최대 생성 task 수 | 무제한 |
 | `--dry-run` | 실제 생성 없이 미리보기 | - |
 
-**자동 처리 항목:**
-- Python 3.8+ 자동 탐지
-- `requests` 패키지 자동 설치
-- CVAT 서버 연결 확인
-- 데이터셋 존재 여부 확인
+---
+
+### 3. assign_tasks_to_orgs.sh - 범위별 Organization 할당
+
+**특정 세션/split 범위의 Task를 특정 Organization에 할당하여 생성합니다.**
+
+#### 단일 할당
+
+```bash
+# Home 데이터셋의 세션 00-19를 team1에 할당
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset home --sessions 00-19 --org team1
+
+# Home의 특정 subdir만
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset home --sessions 00-19 --subdirs 01 --org team1
+
+# Home의 특정 datasets만
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset home --sessions 00-19 --datasets multisensor_home1 --org team1
+
+# MMOffice의 세션 01-04를 team1에 할당
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset mmoffice --sessions 01-04 --org team1
+
+# MMOffice의 특정 split-ids만
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset mmoffice --sessions 01-04 --split-ids 5-6 --org team1
+
+# dry-run 미리보기
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset home --sessions 00-19 --org team1 --dry-run
+```
+
+#### 설정 파일로 일괄 할당
+
+```bash
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --config assignments.txt
+```
+
+**설정 파일 형식 (assignments.txt):**
+
+```
+# 주석 (# 또는 빈 줄은 무시)
+# 형식: dataset:sessions:org[:옵션]
+
+# Home1 분배 (58개 세션 → 3개 조직)
+home:00-19:team1:datasets=multisensor_home1
+home:20-39:team2:datasets=multisensor_home1
+home:40-58:team3:datasets=multisensor_home1
+
+# Home2 분배 (62개 세션 → 3개 조직)
+home:00-20:team1:datasets=multisensor_home2
+home:21-40:team2:datasets=multisensor_home2
+home:41-61:team3:datasets=multisensor_home2
+
+# MMOffice 분배 (세션 + split-ids 조합)
+mmoffice:01-04:team1:split-ids=5,6
+mmoffice:05-08:team2:split-ids=5,6
+mmoffice:09-12:team3:split-ids=5,6
+mmoffice:01-06:team1:split-ids=7
+mmoffice:07-12:team2:split-ids=7
+```
+
+**옵션:**
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--user`, `-u` | CVAT 사용자명 | (필수) |
+| `--password`, `-p` | CVAT 비밀번호 | (필수) |
+| `--dataset` | 데이터셋 타입 (`home` 또는 `mmoffice`) | - |
+| `--sessions` | 세션 범위 (예: `00-10`) | - |
+| `--org` | Organization slug | - |
+| `--subdirs` | Home 서브디렉토리 필터 | - |
+| `--datasets` | Home 데이터셋 필터 | - |
+| `--split-ids` | MMOffice split ID 필터 | - |
+| `--config` | 설정 파일 경로 | - |
+| `--data-dir`, `-d` | 데이터셋 루트 경로 | `/mnt/data` |
+| `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--dry-run` | 실제 생성 없이 미리보기 | - |
 
 ---
 
-## 개별 스크립트 목록
+## Python 스크립트
 
-### check_environment.py
+### 1. create_multisensor_home_tasks.py
 
-CVAT Multiview 프로젝트의 환경을 체크하는 스크립트입니다.
+**Multisensor Home 데이터셋에서 Multiview Task를 생성합니다.**
+
+```bash
+# 모든 세트 생성
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data
+
+# Organization 지정
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --org ielab
+
+# 특정 세션 범위만 (새 기능)
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --sessions 00-19
+
+# 특정 세션 개별 지정
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --sessions 00 05 10 15 20
+
+# 특정 데이터셋만
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1
+
+# 특정 서브디렉토리만
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --subdirs 01
+
+# 조합 사용 (home1의 01 subdir에서 세션 00-10만)
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 \
+    --subdirs 01 \
+    --sessions 00-10 \
+    --org team1
+
+# dry-run 미리보기
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --dry-run
+
+# task 수 제한
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --limit 10
+```
+
+**옵션:**
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--user`, `-u` | CVAT 사용자명 | (필수) |
+| `--password`, `-p` | CVAT 비밀번호 | (필수) |
+| `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug | - |
+| `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
+| `--datasets` | 처리할 데이터셋 | `multisensor_home1 multisensor_home2` |
+| `--subdirs` | 처리할 서브디렉토리 | 자동 탐지 |
+| `--sessions` | 세션 ID 필터 (범위 또는 개별) | 전체 |
+| `--view-count` | 뷰 개수 | `5` |
+| `--limit` | 최대 생성 task 수 | 무제한 |
+| `--dry-run` | 실제 생성 없이 미리보기 | - |
+
+**세션 범위 형식:**
+- 범위: `00-10` (00부터 10까지)
+- 개별: `00 05 10` (공백 구분)
+- 혼합: `00-05 10 15-20`
+
+---
+
+### 2. create_mmoffice_tasks.py
+
+**MMOffice 데이터셋에서 Multiview Task를 생성합니다.**
+
+```bash
+# 모든 세트 생성
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data
+
+# Organization 지정
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --org ielab
+
+# 특정 세션 범위만 (새 기능)
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --sessions 01-04
+
+# 특정 split-ids만 (새 기능)
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --split-ids 5 6
+
+# split-ids 범위 지정
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --split-ids 5-7
+
+# 조합 사용 (split-ids 5,6에서 세션 01-06만)
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --split-ids 5 6 \
+    --sessions 01-06 \
+    --org team1
+
+# 특정 split만 (test 또는 train)
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --splits train
+
+# dry-run 미리보기
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --dry-run
+
+# task 수 제한
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --limit 10
+```
+
+**옵션:**
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--user`, `-u` | CVAT 사용자명 | (필수) |
+| `--password`, `-p` | CVAT 비밀번호 | (필수) |
+| `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug | - |
+| `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
+| `--splits` | 처리할 split (test/train) | `test train` |
+| `--split-ids` | split ID 필터 (파일명의 split[N]) | 전체 |
+| `--sessions` | 세션 ID 필터 | 전체 |
+| `--min-views` | 최소 뷰 개수 | `1` |
+| `--limit` | 최대 생성 task 수 | 무제한 |
+| `--dry-run` | 실제 생성 없이 미리보기 | - |
+
+---
+
+### 3. check_environment.py
+
+**환경을 체크합니다.**
 
 ```bash
 python check_environment.py
@@ -75,184 +395,77 @@ python check_environment.py
 - CVAT 서버 연결 확인
 - 필수 패키지 설치 여부 확인
 
-### create_multiview_task.py
+---
 
-단일 Multiview Task를 생성하는 스크립트입니다.
+### 4. create_multiview_task.py
+
+**단일 Multiview Task를 생성합니다.**
 
 ```bash
 python create_multiview_task.py --token YOUR_TOKEN --session 00 --part 1
 ```
 
-**옵션:**
-- `--token`: CVAT API 토큰 (필수)
-- `--session`: 세션 ID (예: "00", "01")
-- `--part`: 파트 번호 (예: 1, 2)
-- `--dataset-path`: 데이터셋 경로
+---
 
-### create_multiview_tasks.py
+### 5. create_multiview_tasks.py
 
-여러 Multiview Task를 배치로 생성하는 스크립트입니다.
-
-**파일 명명 규칙:** `[n]-View[x]-Part[y].mp4`
-- n: 세션 ID (예: 100, 101, 102)
-- x: 뷰 번호 (1-5)
-- y: 파트 번호 (1, 2, ...)
+**범용 배치 Task 생성 스크립트입니다.**
 
 ```bash
 # 단일 task 생성
 python create_multiview_tasks.py --user admin --password admin123 \
-    --session-id 100 --part 1 --data-dir C:/path/to/videos
+    --session-id 100 --part 1 --data-dir /path/to/videos
 
 # 배치 생성 (여러 세션)
 python create_multiview_tasks.py --user admin --password admin123 \
-    --session-ids 100 101 102 --parts 1 2 --data-dir C:/path/to/videos
+    --session-ids 100 101 102 --parts 1 2 --data-dir /path/to/videos
 
-# 디렉토리의 모든 세트 자동 탐지
+# 자동 탐지
 python create_multiview_tasks.py --user admin --password admin123 \
-    --data-dir C:/path/to/videos --auto-detect
+    --data-dir /path/to/videos --auto-detect
 ```
 
-### create_multisensor_home_tasks.py
+---
 
-Multisensor Home 데이터셋에서 Multiview Task를 배치로 생성하는 스크립트입니다.
+### 6. quick_test.py
 
-**데이터 구조:**
-```
-/mnt/data/
-├── multisensor_home1/
-│   ├── 01/
-│   │   ├── 00-View1-Part1.mp4, 00-View2-Part1.mp4, ... 00-View5-Part1.mp4
-│   │   └── ...
-│   ├── 02/
-│   └── 03/
-└── multisensor_home2/
-    ├── 01/
-    ├── 02/
-    └── 03/
-```
-
-**파일 명명 규칙:** `[SESSION_ID]-View[VIEW_ID]-Part[PART_NUM].mp4`
-
-**Task 이름 규칙:** `multisensor_home1_[SUBDIR]-[SESSION_ID]-Part[PART_NUM]`
-
-```bash
-# 모든 세트 자동 탐지
-python create_multisensor_home_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data
-
-# 특정 데이터셋만
-python create_multisensor_home_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --datasets multisensor_home1
-
-# 특정 하위 폴더만 처리
-python create_multisensor_home_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --subdirs 01 02
-
-# dry-run으로 미리보기
-python create_multisensor_home_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --dry-run
-
-# 생성할 task 수 제한
-python create_multisensor_home_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --limit 10
-```
-
-**옵션:**
-| 옵션 | 설명 | 기본값 |
-|------|------|--------|
-| `--user`, `-u` | CVAT 사용자명 | (필수) |
-| `--password`, `-p` | CVAT 비밀번호 | (필수) |
-| `--host` | CVAT 서버 URL | `http://localhost:8080` |
-| `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
-| `--datasets` | 처리할 데이터셋 | `multisensor_home1 multisensor_home2` |
-| `--subdirs` | 처리할 하위 폴더 | 자동 탐지 |
-| `--view-count` | 뷰 개수 | `5` |
-| `--limit` | 최대 생성 task 수 | 무제한 |
-| `--dry-run` | 실제 생성 없이 미리보기 | - |
-
-### create_mmoffice_tasks.py
-
-MMOffice 데이터셋에서 Multiview Task를 배치로 생성하는 스크립트입니다.
-
-**데이터 구조:**
-```
-/mnt/data/mmoffice/video/
-├── test/
-│   └── split8_id00_s01_recid008.mp4, split8_id01_s01_recid008.mp4, ...
-└── train/
-    └── split0_id00_s01_recid000_0.mp4, split0_id01_s01_recid000_0.mp4, ...
-```
-
-**파일 명명 규칙:**
-- Test: `split[SPLIT_ID]_id[VIEW_ID]_s[SESSION_ID]_recid[REC_ID].mp4`
-- Train: `split[SPLIT_ID]_id[VIEW_ID]_s[SESSION_ID]_recid[REC_ID]_[PART].mp4`
-
-**세트 정의:**
-- 동일한 SPLIT_ID, SESSION_ID, REC_ID를 가진 파일들이 하나의 세트
-- VIEW_ID는 세트 내에서 각 뷰를 구분 (00, 01, 02, 03)
-- Train의 경우 PART(0, 1)별로 별도의 세트로 처리
-
-**Task 이름 규칙:**
-- Test: `mmoffice_test_split[SPLIT_ID]_s[SESSION_ID]_recid[REC_ID]`
-- Train: `mmoffice_train_split[SPLIT_ID]_s[SESSION_ID]_recid[REC_ID]_part[PART]`
-
-```bash
-# 모든 세트 자동 탐지
-python create_mmoffice_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data
-
-# 특정 split만
-python create_mmoffice_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --splits test
-
-# dry-run으로 미리보기
-python create_mmoffice_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --dry-run
-
-# 생성할 task 수 제한
-python create_mmoffice_tasks.py \
-    --user admin --password admin123 \
-    --data-dir /mnt/data \
-    --limit 10
-```
-
-**옵션:**
-| 옵션 | 설명 | 기본값 |
-|------|------|--------|
-| `--user`, `-u` | CVAT 사용자명 | (필수) |
-| `--password`, `-p` | CVAT 비밀번호 | (필수) |
-| `--host` | CVAT 서버 URL | `http://localhost:8080` |
-| `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
-| `--splits` | 처리할 split | `test train` |
-| `--min-views` | 최소 뷰 개수 | `1` |
-| `--limit` | 최대 생성 task 수 | 무제한 |
-| `--dry-run` | 실제 생성 없이 미리보기 | - |
-
-### quick_test.py
-
-대화형으로 Multiview Task를 빠르게 생성하고 테스트하는 스크립트입니다.
+**대화형으로 빠르게 테스트합니다.**
 
 ```bash
 python quick_test.py
 ```
 
-- 대화형 인터페이스
-- 서버 연결 자동 확인
-- Task 생성 및 테스트 통합
+---
+
+## Organization (팀 공유 기능)
+
+### Organization 생성 방법
+
+1. **스크립트 사용 (권장):** `setup_cvat.sh` 실행 시 대화형으로 생성
+2. **CVAT UI 사용:** 로그인 → 우측 상단 사용자 메뉴 → Organization → Create
+
+### 멤버 초대
+
+1. CVAT 접속 후 로그인
+2. 우측 상단 사용자 메뉴 → Organization → [Organization 이름]
+3. Members → Invite
+
+### Task를 Organization에 할당
+
+모든 스크립트에서 `--org` 옵션으로 Organization을 지정할 수 있습니다.
+
+```bash
+# 전체 Task를 하나의 org에
+./create_all_tasks.sh --user admin --password admin123 --org ielab
+
+# 범위별로 다른 org에 할당
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset home --sessions 00-19 --org team1
+./assign_tasks_to_orgs.sh --user admin --password admin123 \
+    --dataset home --sessions 20-39 --org team2
+```
+
+---
 
 ## 전제 조건
 
@@ -264,11 +477,71 @@ python quick_test.py
 pip install requests
 ```
 
+---
+
 ## 데이터셋 요약
 
-| 데이터셋 | 스크립트 | 세트 수 | 뷰 수 |
+| 데이터셋 | 세션 범위 | 세트 수 | 뷰 수 |
 |----------|----------|---------|-------|
-| Multisensor Home1 | `create_multisensor_home_tasks.py` | 168 | 5 views |
-| Multisensor Home2 | `create_multisensor_home_tasks.py` | 198 | 5 views |
-| MMOffice Test | `create_mmoffice_tasks.py` | 88 | 4 views |
-| MMOffice Train | `create_mmoffice_tasks.py` | 720 | 4 views |
+| Multisensor Home1/01 | 00-24 | 50 (25 sessions × 2 parts) | 5 |
+| Multisensor Home1/02 | 25-58 | 68 (34 sessions × 2 parts) | 5 |
+| Multisensor Home2/01 | 00-30 | 62 (31 sessions × 2 parts) | 5 |
+| Multisensor Home2/02 | 31-61 | 62 (31 sessions × 2 parts) | 5 |
+| MMOffice Train | 01-12 × split2-7 | ~946 | 4 |
+
+---
+
+## 워크플로우 예시
+
+### 1. 초기 설정 + 전체 Task 생성
+
+```bash
+# 1. 초기 설정 (Superuser, Organization, Users)
+./scripts/init/setup_cvat.sh
+
+# 2. 전체 Task 생성
+./scripts/init/create_all_tasks.sh \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --org ielab
+```
+
+### 2. 팀별 Task 분배
+
+```bash
+# assignments.txt 파일 생성
+cat > assignments.txt << 'EOF'
+# Team1: Home1 전반부
+home:00-29:team1:datasets=multisensor_home1
+
+# Team2: Home1 후반부 + Home2 전반부
+home:30-58:team2:datasets=multisensor_home1
+home:00-30:team2:datasets=multisensor_home2
+
+# Team3: Home2 후반부
+home:31-61:team3:datasets=multisensor_home2
+
+# MMOffice 분배
+mmoffice:01-04:team1
+mmoffice:05-08:team2
+mmoffice:09-12:team3
+EOF
+
+# 일괄 할당
+./scripts/init/assign_tasks_to_orgs.sh \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --config assignments.txt
+```
+
+### 3. 특정 범위만 빠르게 생성
+
+```bash
+# Home1의 세션 00-10만 빠르게 테스트
+python scripts/init/create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 \
+    --sessions 00-10 \
+    --org ielab
+```

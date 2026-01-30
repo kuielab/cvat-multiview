@@ -46,6 +46,40 @@ from typing import List, Tuple, Optional, Set, Dict
 from dataclasses import dataclass
 
 
+def parse_session_range(range_str: str) -> List[str]:
+    """
+    세션 범위 문자열을 세션 ID 리스트로 변환
+
+    예: "00-10" -> ["00", "01", ..., "10"]
+        "5-15" -> ["05", "06", ..., "15"]
+    """
+    if '-' in range_str:
+        parts = range_str.split('-')
+        if len(parts) == 2:
+            start, end = parts
+            # 자릿수 유지 (예: "00" -> 2자리)
+            width = max(len(start), len(end))
+            start_num = int(start)
+            end_num = int(end)
+            return [str(i).zfill(width) for i in range(start_num, end_num + 1)]
+    return [range_str]
+
+
+def parse_sessions_arg(sessions: List[str]) -> Set[str]:
+    """
+    세션 인자를 파싱하여 세션 ID Set 반환
+
+    지원 형식:
+    - 단일 값: ["00", "01", "02"]
+    - 범위: ["00-10", "20-30"]
+    - 혼합: ["00-05", "10", "15-20"]
+    """
+    result = set()
+    for s in sessions:
+        result.update(parse_session_range(s))
+    return result
+
+
 # 기본 설정
 DEFAULT_HOST = "http://localhost:8080"
 DEFAULT_VIEW_COUNT = 5
@@ -125,15 +159,22 @@ def discover_video_sets(
     data_dir: Path,
     datasets: List[str],
     subdirs: Optional[List[str]] = None,
-    view_count: int = DEFAULT_VIEW_COUNT
+    view_count: int = DEFAULT_VIEW_COUNT,
+    sessions: Optional[Set[str]] = None
 ) -> List[VideoSet]:
     """
     디렉토리에서 비디오 세트 자동 탐지
 
     파일 명명 규칙: [SESSION_ID]-View[VIEW_ID]-Part[PART_NUM].mp4
+
+    Args:
+        sessions: 필터링할 세션 ID Set. None이면 모든 세션 포함
     """
     video_sets = []
     pattern = re.compile(r'^(\d+)-View(\d+)-Part(\d+)\.mp4$', re.IGNORECASE)
+
+    if sessions:
+        print(f"  Session filter: {sorted(sessions)}")
 
     for dataset in datasets:
         dataset_dir = data_dir / dataset
@@ -174,6 +215,10 @@ def discover_video_sets(
             # 각 조합에 대해 VideoSet 생성
             subdir_sets = 0
             for session_id, part in sorted(combinations):
+                # 세션 필터링
+                if sessions and session_id not in sessions:
+                    continue
+
                 views = []
                 valid = True
 
@@ -206,7 +251,8 @@ def create_multiview_task(
     host: str,
     session: requests.Session,
     video_set: VideoSet,
-    labels: List[dict] = None
+    labels: List[dict] = None,
+    org: str = None
 ) -> Optional[dict]:
     """
     Multiview task 생성
@@ -244,11 +290,13 @@ def create_multiview_task(
             'view_count': str(len(video_set.views)),
         }
 
-        # CSRF 토큰 추가
+        # CSRF 토큰 및 Organization 헤더 추가
         headers = {}
         csrf_token = session.cookies.get('csrftoken')
         if csrf_token:
             headers['X-CSRFToken'] = csrf_token
+        if org:
+            headers['X-Organization'] = org
 
         print("Sending request...")
         response = session.post(
@@ -321,6 +369,7 @@ Examples:
     parser.add_argument('--user', '-u', required=True, help='CVAT username')
     parser.add_argument('--password', '-p', required=True, help='CVAT password')
     parser.add_argument('--host', default=DEFAULT_HOST, help=f'CVAT host (default: {DEFAULT_HOST})')
+    parser.add_argument('--org', help='Organization slug (tasks will be shared with org members)')
 
     # 데이터 경로
     parser.add_argument('--data-dir', '-d', required=True,
@@ -332,6 +381,10 @@ Examples:
     parser.add_argument('--subdirs', nargs='+',
                         help='Specific subdirs to process (e.g., 01 02 03). Default: auto-detect')
 
+    # 세션 필터링
+    parser.add_argument('--sessions', nargs='+',
+                        help='Session IDs to include (e.g., 00 01 02 or 00-10 for range)')
+
     # 옵션
     parser.add_argument('--view-count', type=int, default=DEFAULT_VIEW_COUNT,
                         help=f'Number of views per set (default: {DEFAULT_VIEW_COUNT})')
@@ -340,6 +393,12 @@ Examples:
                         help='Show what would be created without actually creating')
 
     args = parser.parse_args()
+
+    # 세션 필터 파싱
+    sessions_filter = None
+    if args.sessions:
+        sessions_filter = parse_sessions_arg(args.sessions)
+        print(f"Session filter: {sorted(sessions_filter)}")
 
     data_dir = Path(args.data_dir)
     if not data_dir.exists():
@@ -354,7 +413,8 @@ Examples:
         data_dir=data_dir,
         datasets=args.datasets,
         subdirs=args.subdirs,
-        view_count=args.view_count
+        view_count=args.view_count,
+        sessions=sessions_filter
     )
 
     if not video_sets:
@@ -406,7 +466,8 @@ Examples:
         result = create_multiview_task(
             host=args.host,
             session=session,
-            video_set=vs
+            video_set=vs,
+            org=args.org
         )
 
         if result:

@@ -1697,10 +1697,11 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
 
         try:
             with transaction.atomic():
-                # Create Task
+                # Create Task with organization support
                 task_data = {
                     'name': task_name,
                     'owner': request.user,
+                    'organization': request.iam_context['organization'],
                     'dimension': models.DimensionType.MULTIVIEW,
                     'mode': '',
                     'subset': '',
