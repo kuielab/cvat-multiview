@@ -188,23 +188,23 @@ paths:
   - 'cvat/**'
   - 'supervisord/**'
   - 'utils/**'
+  - 'backend_entrypoint.sh'
+  - 'manage.py'
   # UI
   - 'Dockerfile.ui'
   - 'cvat-ui/**'
   - 'cvat-core/**'
   - 'cvat-canvas/**'
+  - 'cvat-canvas3d/**'
+  - 'cvat-data/**'
   - 'package.json'
   - 'yarn.lock'
+  - '.yarnrc.yml'
+  # Workflow
+  - '.github/workflows/docker-publish.yml'
 ```
 
-**빌드 스킵 파일** (문서, 설정 등):
-```yaml
-paths-ignore:
-  - '**/*.md'
-  - 'docs/**'
-  - '.gitignore'
-  - 'tests/**'
-```
+**빌드 스킵**: 위 paths에 포함되지 않은 파일들 (문서, 설정 등)은 자동으로 빌드를 트리거하지 않음
 
 ### 실행 환경별 설정
 
