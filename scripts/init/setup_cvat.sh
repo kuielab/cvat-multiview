@@ -110,12 +110,47 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# 시스템 의존성 확인
+check_system_dependencies() {
+    log_info "시스템 의존성 확인 중..."
+
+    local missing_deps=()
+
+    # curl 확인
+    if ! command -v curl &> /dev/null; then
+        missing_deps+=("curl")
+    fi
+
+    # grep 확인
+    if ! command -v grep &> /dev/null; then
+        missing_deps+=("grep")
+    fi
+
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        log_error "다음 패키지가 설치되지 않았습니다: ${missing_deps[*]}"
+        log_info "설치 방법:"
+        log_info "  Ubuntu/Debian: sudo apt-get install ${missing_deps[*]}"
+        log_info "  CentOS/RHEL:   sudo yum install ${missing_deps[*]}"
+        log_info "  macOS:         brew install ${missing_deps[*]}"
+        exit 1
+    fi
+
+    log_info "시스템 의존성 확인 완료"
+}
+
 # Docker 확인
 check_docker() {
     log_info "Docker 확인 중..."
 
     if ! command -v docker &> /dev/null; then
         log_error "Docker가 설치되지 않았습니다."
+        log_info "Docker 설치: https://docs.docker.com/get-docker/"
+        exit 1
+    fi
+
+    if ! docker compose version &> /dev/null && ! docker-compose version &> /dev/null; then
+        log_error "Docker Compose가 설치되지 않았습니다."
+        log_info "Docker Compose 설치: https://docs.docker.com/compose/install/"
         exit 1
     fi
 
@@ -398,6 +433,9 @@ main() {
     echo "  3. 일반 유저 생성 (여러 명 가능)"
     echo "  4. 유저를 Organization에 초대"
     echo ""
+
+    # 시스템 의존성 확인
+    check_system_dependencies
 
     # Docker 확인
     check_docker

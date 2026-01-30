@@ -145,6 +145,28 @@ find_python() {
     return 1
 }
 
+# pip 찾기
+find_pip() {
+    local python="$1"
+
+    # pip 모듈로 실행 시도
+    if $python -m pip --version &> /dev/null; then
+        echo "$python -m pip"
+        return 0
+    fi
+
+    # pip3, pip 명령어 시도
+    local pip_paths=("pip3" "pip")
+    for pip in "${pip_paths[@]}"; do
+        if command -v "$pip" &> /dev/null; then
+            echo "$pip"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # 의존성 설치
 install_dependencies() {
     local python="$1"
@@ -154,7 +176,16 @@ install_dependencies() {
     # requests 모듈 확인
     if ! $python -c "import requests" 2>/dev/null; then
         log_warn "requests 모듈이 없습니다. 설치를 시도합니다..."
-        if $python -m pip install requests --quiet; then
+
+        local pip_cmd
+        pip_cmd=$(find_pip "$python")
+        if [[ -z "$pip_cmd" ]]; then
+            log_error "pip를 찾을 수 없습니다."
+            log_error "수동으로 설치해주세요: pip install requests"
+            exit 1
+        fi
+
+        if $pip_cmd install requests --quiet 2>/dev/null || $pip_cmd install requests 2>/dev/null; then
             log_info "requests 설치 완료"
         else
             log_error "requests 설치 실패. 수동으로 설치해주세요: pip install requests"
