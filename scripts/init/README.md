@@ -83,7 +83,13 @@ CVAT_ORG=ielab \
 
 **초기 설정만 수행하는 스크립트입니다. (Task 생성 제외)**
 
-Superuser 계정 생성과 Organization 생성만 수행합니다. Task 생성은 별도로 `create_all_tasks.sh`를 사용하세요.
+다음 기능을 대화형으로 수행합니다:
+- Superuser 계정 생성
+- Organization 생성 (여러 개 가능)
+- 일반 유저 생성 (여러 명 가능)
+- 유저를 Organization에 초대
+
+Task 생성은 별도로 `create_all_tasks.sh`를 사용하세요.
 
 ```bash
 # CVAT 프로젝트 디렉토리에서 실행
@@ -92,15 +98,11 @@ cd /path/to/cvat-multiview
 # 대화형 실행
 ./scripts/init/setup_cvat.sh
 
-# 환경변수로 미리 설정
-CVAT_HOST=http://3.36.160.76:8080 \
-CVAT_USER=admin \
-CVAT_PASSWORD=admin123 \
-CVAT_ORG=ielab \
-./scripts/init/setup_cvat.sh
-
 # Superuser 이미 있는 경우
 ./scripts/init/setup_cvat.sh --skip-superuser
+
+# EC2 등 다른 서버에서 실행
+CVAT_HOST=http://3.36.160.76:8080 ./scripts/init/setup_cvat.sh
 ```
 
 **옵션:**
@@ -108,13 +110,60 @@ CVAT_ORG=ielab \
 |------|------|
 | `--skip-superuser` | Superuser 생성 단계 건너뛰기 |
 
+**환경변수:**
+| 환경변수 | 설명 | 기본값 |
+|----------|------|--------|
+| `CVAT_HOST` | CVAT 서버 URL | `http://localhost:8080` |
+
 **실행 흐름:**
 ```
 1. Docker/CVAT 서버 연결 확인
-2. 사용자 정보 입력 (user, password, org)
-3. [Step 1] Superuser 생성 (docker compose exec)
-4. [Step 2] Organization 생성 (API 호출)
-5. 완료 메시지 + 다음 단계 안내
+2. [Step 1] Superuser 생성 (docker compose exec)
+3. [Step 2] Organization 생성 (여러 개 가능, 반복)
+4. [Step 3] 일반 유저 생성 (여러 명 가능, 반복)
+   - 각 유저를 Organization에 초대 (선택)
+5. 완료 메시지 + Task 생성 명령어 안내
+```
+
+**실행 예시:**
+```
+$ ./scripts/init/setup_cvat.sh
+
+============================================================
+  Step 2: Organization 생성
+============================================================
+
+생성할 Organization 이름 (slug, 예: ielab): ielab
+[INFO] Organization 'ielab' 생성 완료
+
+Organization을 더 생성하시겠습니까? (y/N): y
+
+생성할 Organization 이름: testteam
+[INFO] Organization 'testteam' 생성 완료
+
+Organization을 더 생성하시겠습니까? (y/N): n
+
+============================================================
+  Step 3: 일반 유저 생성
+============================================================
+
+일반 유저를 생성하시겠습니까? (y/N): y
+
+--- 새 유저 정보 입력 ---
+사용자명: user1
+이메일: user1@test.com
+비밀번호: ********
+[INFO] 유저 'user1' 생성 완료
+
+이 유저를 Organization에 초대하시겠습니까?
+사용 가능한 Organization:
+  1. ielab
+  2. testteam
+  0. 초대 안 함
+
+선택 (번호, 여러 개는 쉼표로 구분, 예: 1,2): 1,2
+[INFO] 유저 'user1'을 'ielab'에 초대 완료
+[INFO] 유저 'user1'을 'testteam'에 초대 완료
 ```
 
 ---
