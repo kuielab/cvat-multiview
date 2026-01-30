@@ -6,7 +6,8 @@ Multiview Task 생성 및 테스트를 위한 유틸리티 스크립트 모음�
 
 ```
 scripts/init/
-├── create_all_tasks.sh           # 통합 실행 스크립트
+├── setup_and_create_tasks.sh     # 초기 설정 + Task 생성 통합 스크립트 (권장)
+├── create_all_tasks.sh           # Task 생성 스크립트
 ├── create_multisensor_home_tasks.py
 ├── create_mmoffice_tasks.py
 ├── create_multiview_task.py
@@ -16,11 +17,70 @@ scripts/init/
 └── README.md
 ```
 
-## 빠른 시작
+## 빠른 시작 (권장)
+
+### setup_and_create_tasks.sh
+
+**CVAT 초기 설정부터 Task 생성까지 모든 과정을 자동화하는 통합 스크립트입니다.**
+
+다음 단계를 순서대로 수행합니다:
+1. Superuser 계정 생성
+2. Organization 생성 (팀원들과 Task 공유를 위해)
+3. Multiview Task 일괄 생성
+
+```bash
+# CVAT 프로젝트 디렉토리에서 실행
+cd /path/to/cvat-multiview
+
+# 대화형 실행 (모든 정보 직접 입력)
+./scripts/init/setup_and_create_tasks.sh
+
+# 환경변수로 미리 설정
+CVAT_HOST=http://3.36.160.76:8080 \
+CVAT_USER=admin \
+CVAT_PASSWORD=admin123 \
+CVAT_ORG=ielab \
+./scripts/init/setup_and_create_tasks.sh
+
+# Superuser 이미 있는 경우
+./scripts/init/setup_and_create_tasks.sh --skip-superuser
+
+# dry-run으로 미리보기
+./scripts/init/setup_and_create_tasks.sh --dry-run
+```
+
+**옵션:**
+| 옵션 | 설명 |
+|------|------|
+| `--skip-superuser` | Superuser 생성 단계 건너뛰기 |
+| `--dry-run` | Task 생성 미리보기 (실제 생성 안 함) |
+
+**환경변수:**
+| 환경변수 | 설명 | 기본값 |
+|----------|------|--------|
+| `CVAT_HOST` | CVAT 서버 URL | `http://localhost:8080` |
+| `CVAT_USER` | CVAT 사용자명 | (대화형 입력) |
+| `CVAT_PASSWORD` | CVAT 비밀번호 | (대화형 입력) |
+| `CVAT_ORG` | Organization slug | (대화형 입력) |
+| `DATA_DIR` | 데이터셋 루트 경로 | `/mnt/data` |
+
+**실행 흐름:**
+```
+1. Docker/CVAT 서버 연결 확인
+2. 사용자 정보 입력 (user, password, org)
+3. [Step 1] Superuser 생성 (docker compose exec)
+4. [Step 2] Organization 생성 (API 호출)
+5. [Step 3] Task 일괄 생성 (create_all_tasks.sh 호출)
+6. 완료 메시지 + 멤버 초대 안내
+```
+
+**주의:** Step 1에서 입력하는 superuser 정보와 위에서 입력한 CVAT_USER/CVAT_PASSWORD가 **동일**해야 합니다.
+
+---
 
 ### create_all_tasks.sh
 
-**모든 데이터셋의 Multiview Task를 한 번에 생성하는 통합 스크립트입니다.**
+**모든 데이터셋의 Multiview Task를 한 번에 생성하는 스크립트입니다.**
 
 Multisensor Home과 MMOffice 데이터셋을 자동으로 탐지하여 task를 생성합니다.
 Python 및 의존성 패키지 설치 여부를 자동으로 확인하고, 필요시 설치합니다.
@@ -31,6 +91,9 @@ cd /path/to/cvat-multiview/scripts/init
 
 # 기본 실행 (모든 데이터셋)
 ./create_all_tasks.sh --user admin --password admin123
+
+# Organization 지정 (팀원들과 공유)
+./create_all_tasks.sh --user admin --password admin123 --org ielab
 
 # dry-run으로 미리보기
 ./create_all_tasks.sh --user admin --password admin123 --dry-run
@@ -49,6 +112,7 @@ cd /path/to/cvat-multiview/scripts/init
 | `--password`, `-p` | CVAT 비밀번호 | (필수) |
 | `--data-dir`, `-d` | 데이터셋 루트 경로 | `/mnt/data` |
 | `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug (팀 공유용) | - |
 | `--limit` | 최대 생성 task 수 | 무제한 |
 | `--dry-run` | 실제 생성 없이 미리보기 | - |
 
@@ -57,6 +121,35 @@ cd /path/to/cvat-multiview/scripts/init
 - `requests` 패키지 자동 설치
 - CVAT 서버 연결 확인
 - 데이터셋 존재 여부 확인
+
+---
+
+## Organization (팀 공유 기능)
+
+**Organization을 사용하면 팀원들과 Task를 공유할 수 있습니다.**
+
+### Organization 생성 방법
+
+1. **스크립트 사용 (권장):** `setup_and_create_tasks.sh` 실행 시 자동 생성
+2. **CVAT UI 사용:** 로그인 → 우측 상단 사용자 메뉴 → Organization → Create
+
+### 멤버 초대
+
+1. CVAT 접속 후 로그인
+2. 우측 상단 사용자 메뉴 → Organization → [Organization 이름]
+3. Members → Invite
+
+### Task 생성 시 Organization 지정
+
+모든 Task 생성 스크립트에 `--org` 옵션을 사용하면 해당 Organization에 Task가 생성되어 멤버들과 공유됩니다.
+
+```bash
+# Organization에 Task 생성
+./create_all_tasks.sh --user admin --password admin123 --org ielab
+
+# 또는 개별 스크립트 사용
+python create_multisensor_home_tasks.py --user admin --password admin123 --org ielab --data-dir /mnt/data
+```
 
 ---
 
@@ -141,6 +234,12 @@ python create_multisensor_home_tasks.py \
     --user admin --password admin123 \
     --data-dir /mnt/data
 
+# Organization에 생성 (팀 공유)
+python create_multisensor_home_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --org ielab
+
 # 특정 데이터셋만
 python create_multisensor_home_tasks.py \
     --user admin --password admin123 \
@@ -172,6 +271,7 @@ python create_multisensor_home_tasks.py \
 | `--user`, `-u` | CVAT 사용자명 | (필수) |
 | `--password`, `-p` | CVAT 비밀번호 | (필수) |
 | `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug | - |
 | `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
 | `--datasets` | 처리할 데이터셋 | `multisensor_home1 multisensor_home2` |
 | `--subdirs` | 처리할 하위 폴더 | 자동 탐지 |
@@ -211,6 +311,12 @@ python create_mmoffice_tasks.py \
     --user admin --password admin123 \
     --data-dir /mnt/data
 
+# Organization에 생성 (팀 공유)
+python create_mmoffice_tasks.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --org ielab
+
 # 특정 split만
 python create_mmoffice_tasks.py \
     --user admin --password admin123 \
@@ -236,6 +342,7 @@ python create_mmoffice_tasks.py \
 | `--user`, `-u` | CVAT 사용자명 | (필수) |
 | `--password`, `-p` | CVAT 비밀번호 | (필수) |
 | `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug | - |
 | `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
 | `--splits` | 처리할 split | `test train` |
 | `--min-views` | 최소 뷰 개수 | `1` |

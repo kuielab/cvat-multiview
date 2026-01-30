@@ -206,7 +206,8 @@ def create_multiview_task(
     host: str,
     session: requests.Session,
     video_set: VideoSet,
-    labels: List[dict] = None
+    labels: List[dict] = None,
+    org: str = None
 ) -> Optional[dict]:
     """
     Multiview task 생성
@@ -244,11 +245,13 @@ def create_multiview_task(
             'view_count': str(len(video_set.views)),
         }
 
-        # CSRF 토큰 추가
+        # CSRF 토큰 및 Organization 헤더 추가
         headers = {}
         csrf_token = session.cookies.get('csrftoken')
         if csrf_token:
             headers['X-CSRFToken'] = csrf_token
+        if org:
+            headers['X-Organization'] = org
 
         print("Sending request...")
         response = session.post(
@@ -321,6 +324,7 @@ Examples:
     parser.add_argument('--user', '-u', required=True, help='CVAT username')
     parser.add_argument('--password', '-p', required=True, help='CVAT password')
     parser.add_argument('--host', default=DEFAULT_HOST, help=f'CVAT host (default: {DEFAULT_HOST})')
+    parser.add_argument('--org', help='Organization slug (tasks will be shared with org members)')
 
     # 데이터 경로
     parser.add_argument('--data-dir', '-d', required=True,
@@ -406,7 +410,8 @@ Examples:
         result = create_multiview_task(
             host=args.host,
             session=session,
-            video_set=vs
+            video_set=vs,
+            org=args.org
         )
 
         if result:
