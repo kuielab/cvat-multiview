@@ -20,6 +20,7 @@ DRY_RUN=""
 USER=""
 PASSWORD=""
 LIMIT=""
+ORG=""
 
 # 색상 정의
 RED='\033[0;31m'
@@ -52,12 +53,14 @@ Usage: $0 --user USERNAME --password PASSWORD [OPTIONS]
 선택 옵션:
   --data-dir, -d    데이터셋 루트 경로 (기본값: /mnt/data)
   --host            CVAT 서버 URL (기본값: http://localhost:8080)
+  --org             Organization slug (tasks will be shared with org members)
   --limit           생성할 최대 task 수
   --dry-run         실제 생성 없이 미리보기
   --help, -h        도움말 출력
 
 예시:
   $0 --user admin --password admin123
+  $0 --user admin --password admin123 --org ielab
   $0 --user admin --password admin123 --dry-run
   $0 --user admin --password admin123 --data-dir /mnt/data --limit 10
 EOF
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --host)
             HOST="$2"
+            shift 2
+            ;;
+        --org)
+            ORG="--org $2"
             shift 2
             ;;
         --limit)
@@ -245,7 +252,7 @@ main() {
     echo ""
 
     # 공통 옵션
-    COMMON_OPTS="--user $USER --password $PASSWORD --host $HOST --data-dir $DATA_DIR $LIMIT $DRY_RUN"
+    COMMON_OPTS="--user $USER --password $PASSWORD --host $HOST --data-dir $DATA_DIR $ORG $LIMIT $DRY_RUN"
 
     # Multisensor Home Tasks 생성
     if [[ -d "$DATA_DIR/multisensor_home1" ]] || [[ -d "$DATA_DIR/multisensor_home2" ]]; then
