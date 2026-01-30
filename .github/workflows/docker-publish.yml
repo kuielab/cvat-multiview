@@ -23,20 +23,8 @@ on:
       - 'package.json'
       - 'yarn.lock'
       - '.yarnrc.yml'
-    paths-ignore:
-      # Documentation
-      - '**/*.md'
-      - 'docs/**'
-      # Config files that don't affect build
-      - '.gitignore'
-      - '.gitattributes'
-      - 'LICENSE'
-      - '.vscode/**'
-      - '.idea/**'
-      # Test files
-      - 'tests/**'
-      - '**/*.test.*'
-      - '**/*.spec.*'
+      # Workflow itself
+      - '.github/workflows/docker-publish.yml'
   workflow_dispatch:  # 수동 실행 가능
 
 env:
