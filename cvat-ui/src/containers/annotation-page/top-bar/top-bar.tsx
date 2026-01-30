@@ -329,9 +329,16 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             canvasIsReady,
             onSwitchPlay,
             onChangeFrame,
+            workspace,
         } = this.props;
 
         const { stopFrame } = jobInstance;
+
+        // Skip frame sync for Multiview workspace - it handles its own video-based sync
+        // The Multiview workspace uses video.currentTime to calculate frames directly
+        if (workspace === Workspace.MULTIVIEW) {
+            return;
+        }
 
         if (playing && canvasIsReady && !frameFetching && !this.isWaitingForPlayDelay) {
             this.isWaitingForPlayDelay = true;

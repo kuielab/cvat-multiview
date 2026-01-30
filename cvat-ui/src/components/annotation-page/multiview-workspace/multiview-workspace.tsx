@@ -49,6 +49,9 @@ export default function MultiviewWorkspace(): JSX.Element {
     const lastFrameRef = useRef<number>(-1);
     const videoRefsMap = useRef<Map<number, HTMLVideoElement>>(new Map());
     const syncIntervalRef = useRef<number | null>(null);
+    // Use a ref to track playing state synchronously to avoid race conditions
+    // This ref is updated BEFORE starting/stopping playback to prevent seek effect from triggering
+    const playingRef = useRef<boolean>(false);
 
     const dispatch = useDispatch();
     const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
@@ -171,10 +174,14 @@ export default function MultiviewWorkspace(): JSX.Element {
     // Only depends on `playing` to avoid unnecessary re-runs
     useEffect(() => {
         if (playing) {
+            // Set ref BEFORE starting playback to prevent seek effect from triggering
+            playingRef.current = true;
             playAllVideosRef.current().then(() => {
                 startSyncIntervalRef.current();
             });
         } else {
+            // Set ref BEFORE pausing to allow seek effect to work
+            playingRef.current = false;
             stopSyncIntervalRef.current();
             pauseAllVideosRef.current();
         }
@@ -193,6 +200,8 @@ export default function MultiviewWorkspace(): JSX.Element {
 
         // Only pause when transitioning INTO draw mode, not when already in it
         if (playing && !wasInDrawMode && isInDrawMode) {
+            // Update playingRef FIRST to prevent seek effect from triggering
+            playingRef.current = false;
             // Immediately pause videos (synchronous) - don't wait for Redux state change
             pauseAllVideosRef.current();
             // Also update Redux state to stay in sync
@@ -204,21 +213,26 @@ export default function MultiviewWorkspace(): JSX.Element {
     }, [activeControl, playing, dispatch]);
 
     // Seek all videos when frame changes while NOT playing
+    // Use playingRef (synchronous) instead of playing (from Redux) to avoid race conditions
     useEffect(() => {
         // Only seek when paused - during playback, videos control their own time
-        if (playing) return;
+        // Use playingRef for synchronous check to prevent race conditions
+        if (playingRef.current) return;
 
         const domVideos = document.querySelectorAll('.multiview-video') as NodeListOf<HTMLVideoElement>;
         if (domVideos.length === 0) return;
 
         const targetTime = (frameNumber - (job?.startFrame || 0)) / fps;
 
+        // Use tighter tolerance (0.5 frame @ 30fps ≈ 16ms) to avoid unnecessary seeks
+        const tolerance = 0.5 / fps;
+
         domVideos.forEach((video) => {
-            if (Math.abs(video.currentTime - targetTime) > 0.05) {
+            if (Math.abs(video.currentTime - targetTime) > tolerance) {
                 video.currentTime = targetTime;
             }
         });
-    }, [frameNumber, playing, job, fps]);
+    }, [frameNumber, job, fps]); // Removed 'playing' - we use playingRef instead
 
     // Apply playback rate to all videos
     useEffect(() => {
@@ -239,6 +253,7 @@ export default function MultiviewWorkspace(): JSX.Element {
     }, [activeView]);
 
     // Sync video time to Redux frameNumber when playing
+    // Use requestAnimationFrame with throttling to prevent out-of-order async completions
     useEffect(() => {
         if (!playing) {
             lastFrameRef.current = -1;
@@ -249,19 +264,50 @@ export default function MultiviewWorkspace(): JSX.Element {
         if (domVideos.length === 0) return undefined;
 
         const primaryVideo = domVideos[0];
+        let animationId: number;
+        let lastDispatchedFrame = lastFrameRef.current;
+        let lastDispatchTime = 0;
+        let pendingDispatch = false;
 
-        const handleTimeUpdate = (): void => {
-            if (!primaryVideo || primaryVideo.paused) return;
+        // Throttle interval: dispatch at most every 100ms (10fps for Redux updates)
+        // This prevents multiple changeFrameAsync calls from completing out of order
+        const THROTTLE_MS = 100;
 
-            const masterTime = primaryVideo.currentTime;
-            const newFrame = Math.floor(masterTime * fps);
-
-            // Only dispatch if frame changed significantly
-            if (newFrame !== lastFrameRef.current && job) {
-                lastFrameRef.current = newFrame;
-                const targetFrame = Math.min(newFrame + (job.startFrame || 0), job.stopFrame);
-                dispatch(changeFrameAsync(targetFrame));
+        const updateFrame = (): void => {
+            if (!primaryVideo || primaryVideo.paused) {
+                animationId = requestAnimationFrame(updateFrame);
+                return;
             }
+
+            const now = performance.now();
+            const masterTime = primaryVideo.currentTime;
+            // Use Math.round instead of Math.floor to avoid oscillation at frame boundaries
+            const newFrame = Math.round(masterTime * fps);
+
+            // Only dispatch if:
+            // 1. Frame actually changed
+            // 2. Enough time has passed since last dispatch (throttle)
+            // 3. No pending dispatch in progress
+            const shouldDispatch = newFrame !== lastDispatchedFrame &&
+                                   (now - lastDispatchTime) >= THROTTLE_MS &&
+                                   !pendingDispatch &&
+                                   job;
+
+            if (shouldDispatch) {
+                lastDispatchedFrame = newFrame;
+                lastFrameRef.current = newFrame;
+                lastDispatchTime = now;
+                pendingDispatch = true;
+
+                const targetFrame = Math.min(newFrame + (job.startFrame || 0), job.stopFrame);
+
+                // Use Promise to track when dispatch completes
+                Promise.resolve(dispatch(changeFrameAsync(targetFrame))).finally(() => {
+                    pendingDispatch = false;
+                });
+            }
+
+            animationId = requestAnimationFrame(updateFrame);
         };
 
         // Handle video ended - stop playback and update Redux state
@@ -269,18 +315,11 @@ export default function MultiviewWorkspace(): JSX.Element {
             dispatch(switchPlay(false));
         };
 
-        // Handle video pause (e.g., user clicks pause on video controls)
-        const handlePause = (): void => {
-            // Only dispatch if Redux still thinks we're playing
-            // This syncs Redux state with actual video state
-            dispatch(switchPlay(false));
-        };
-
-        primaryVideo.addEventListener('timeupdate', handleTimeUpdate);
         primaryVideo.addEventListener('ended', handleEnded);
+        animationId = requestAnimationFrame(updateFrame);
 
         return () => {
-            primaryVideo.removeEventListener('timeupdate', handleTimeUpdate);
+            cancelAnimationFrame(animationId);
             primaryVideo.removeEventListener('ended', handleEnded);
         };
     }, [playing, fps, job, dispatch]);

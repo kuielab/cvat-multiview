@@ -18,6 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ui
+    pull_policy: build
     labels:
       traefik.http.routers.cvat-ui.rule: Host(`localhost`) || Host(`127.0.0.1`)
 
