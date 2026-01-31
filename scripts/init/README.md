@@ -88,7 +88,13 @@ CVAT_HOST=http://3.36.160.76:8080 ./scripts/init/setup_cvat.sh
 - Superuser 계정 생성 (docker compose exec)
 - Organization 생성 (여러 개 가능)
 - 일반 유저 생성 (여러 명 가능)
-- 유저를 Organization에 초대
+- 유저를 Organization에 추가 (역할 선택 가능)
+
+**역할 선택:**
+유저를 Organization에 추가할 때 역할을 선택할 수 있습니다:
+- `worker` - 자신에게 할당된 task만 볼 수 있음
+- `supervisor` - 자신에게 할당된 task만 볼 수 있음
+- `maintainer` - **Organization의 모든 task를 볼 수 있음 (권장)**
 
 **옵션:**
 | 옵션 | 설명 |
@@ -215,6 +221,21 @@ mmoffice:07-12:team2:split-ids=7
 | `--data-dir`, `-d` | 데이터셋 루트 경로 | `/mnt/data` |
 | `--host` | CVAT 서버 URL | `http://localhost:8080` |
 | `--dry-run` | 실제 생성 없이 미리보기 | - |
+
+#### Organization 멤버 역할 및 Task 가시성
+
+Organization에 Task를 할당할 때, 멤버의 **역할(role)**에 따라 Task 가시성이 달라집니다.
+
+| 역할 | Task 가시성 | 설명 |
+|------|------------|------|
+| `worker` | **자신에게 할당된 task만** | 가장 제한적인 권한 |
+| `supervisor` | **자신에게 할당된 task만** | worker와 동일한 가시성 |
+| `maintainer` | **Organization의 모든 task** ✓ | Task 생성/수정/삭제 가능 |
+| `owner` | **Organization의 모든 task** | 전체 관리 권한 |
+
+**중요:** 멤버가 Organization의 **모든 Task를 볼 수 있으려면** `maintainer` 이상의 역할이 필요합니다.
+
+`setup_cvat.sh`나 `setup_ielab_production.sh` 스크립트에서 유저 생성 시 역할을 `maintainer`로 설정해야 합니다.
 
 ---
 
@@ -544,4 +565,42 @@ python scripts/init/create_multisensor_home_tasks.py \
     --datasets multisensor_home1 \
     --sessions 00-10 \
     --org ielab
+```
+
+---
+
+## 프로덕션 배포 (setup_ielab_production.sh)
+
+EC2 서버 배포를 위한 전용 스크립트입니다.
+
+### 균등 분배 설정
+
+| Organization | MMOffice | Home1 | Home2 |
+|--------------|----------|-------|-------|
+| worker01 | 세션 01-06 (6개) | 세션 00-09 (10개) | 세션 00-09 (10개) |
+| worker02 | 세션 07-12 (6개) | 세션 10-19 (10개) | 세션 10-19 (10개) |
+
+### 사용법
+
+```bash
+# EC2 서버에서 실행
+cd /home/ubuntu/cvat-multiview/scripts/init
+
+# 전체 설정 (Superuser + Orgs + Users + Tasks)
+./setup_ielab_production.sh all
+
+# 계정 설정만 (Tasks 제외)
+./setup_ielab_production.sh setup
+
+# 유저 재생성 (기존 유저 삭제 후)
+./setup_ielab_production.sh users
+
+# Task 할당 미리보기
+./setup_ielab_production.sh assign-dry
+
+# Task 실제 할당
+./setup_ielab_production.sh assign
+
+# 계정 정보 확인
+./setup_ielab_production.sh info
 ```
