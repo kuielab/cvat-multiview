@@ -372,34 +372,52 @@ create_users() {
                     read -p "선택 (번호, 여러 개는 쉼표로 구분, 예: 1,2): " org_choices
 
                     if [[ "$org_choices" != "0" && -n "$org_choices" ]]; then
-                        # Superuser로 로그인
-                        if api_login "$SUPERUSER_NAME" "$SUPERUSER_PASSWORD" "$cookie_file"; then
-                            local csrf_token=$(grep csrftoken "$cookie_file" | awk '{print $NF}')
+                        # 역할 선택
+                        echo ""
+                        echo "멤버 역할을 선택하세요:"
+                        echo "  1. worker     - 자신에게 할당된 task만 볼 수 있음"
+                        echo "  2. supervisor - 자신에게 할당된 task만 볼 수 있음"
+                        echo "  3. maintainer - Organization의 모든 task를 볼 수 있음 (권장)"
+                        echo ""
+                        read -p "역할 선택 (1-3, 기본값: 3): " role_choice
+                        local selected_role="maintainer"
+                        case "$role_choice" in
+                            1) selected_role="worker" ;;
+                            2) selected_role="supervisor" ;;
+                            *) selected_role="maintainer" ;;
+                        esac
 
-                            IFS=',' read -ra CHOICES <<< "$org_choices"
-                            for choice in "${CHOICES[@]}"; do
-                                choice=$(echo "$choice" | tr -d ' ')
-                                if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#CREATED_ORGS[@]} ]]; then
-                                    local org_slug="${CREATED_ORGS[$((choice-1))]}"
+                        IFS=',' read -ra CHOICES <<< "$org_choices"
+                        for choice in "${CHOICES[@]}"; do
+                            choice=$(echo "$choice" | tr -d ' ')
+                            if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#CREATED_ORGS[@]} ]]; then
+                                local org_slug="${CREATED_ORGS[$((choice-1))]}"
 
-                                    # 초대 API 호출
-                                    local invite_response=$(curl -s -b "$cookie_file" \
-                                        -H "Content-Type: application/json" \
-                                        -H "X-CSRFToken: $csrf_token" \
-                                        -H "X-Organization: $org_slug" \
-                                        -d "{\"role\": \"worker\", \"email\": \"$email\"}" \
-                                        "$CVAT_HOST/api/invitations")
+                                # Docker shell로 멤버십 직접 추가 (email backend 불필요)
+                                log_info "유저 '$username'을 '$org_slug'에 '$selected_role' 역할로 추가 중..."
+                                docker compose exec -T cvat_server python manage.py shell << PYEOF
+from django.contrib.auth.models import User
+from cvat.apps.organizations.models import Organization, Membership, Invitation
 
-                                    if echo "$invite_response" | grep -q "key\|owner\|created"; then
-                                        log_info "유저 '$username'을 '$org_slug'에 초대 완료"
-                                    elif echo "$invite_response" | grep -q "already"; then
-                                        log_warn "유저 '$username'이 이미 '$org_slug'의 멤버입니다."
-                                    else
-                                        log_warn "초대 실패: $invite_response"
-                                    fi
-                                fi
-                            done
-                        fi
+try:
+    user = User.objects.get(username='$username')
+    org = Organization.objects.get(slug='$org_slug')
+    Invitation.objects.filter(membership__user=user, membership__organization=org).delete()
+    membership, created = Membership.objects.get_or_create(
+        user=user, organization=org,
+        defaults={'role': '$selected_role', 'is_active': True}
+    )
+    if not created:
+        membership.role = '$selected_role'
+        membership.is_active = True
+        membership.save()
+    Invitation.objects.filter(membership=membership).delete()
+    print('[OK] $username added to $org_slug as $selected_role')
+except Exception as e:
+    print(f'[ERROR] {e}')
+PYEOF
+                            fi
+                        done
                     fi
                 fi
             elif echo "$register_response" | grep -q "already exists\|username.*exists"; then
