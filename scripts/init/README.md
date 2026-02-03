@@ -493,6 +493,20 @@ python insert_bbox_annotations.py \
     --data-dir /mnt/data \
     --bbox-size 200 \
     --divisions 5
+
+# 데이터 분할 선택 (test 데이터만)
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 \
+    --split test
+
+# test + 다중 클래스
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --split test \
+    --use-dataset-labels
 ```
 
 **지원 데이터 형식:**
@@ -531,6 +545,7 @@ python insert_bbox_annotations.py \
 | `--view-count` | 뷰 개수 | `5` |
 | `--label` | 라벨 이름 (이진분류 시) | `Sound` |
 | `--use-dataset-labels` | 다중 클래스 모드 활성화 | `false` |
+| `--split` | 데이터 분할: `test`, `train`, `all` | `all` |
 | `--limit` | 최대 처리 task 수 | 무제한 |
 | `--dry-run` | 실제 삽입 없이 미리보기 | - |
 
@@ -685,6 +700,15 @@ EC2 서버 배포를 위한 전용 스크립트입니다.
 |------|------|
 | `--local` | 로컬 테스트 모드 (localhost:8080) |
 | `--multi-class` | 다중 클래스 라벨 사용 (기본: 이진분류 Sound) |
+| `--split VALUE` | 데이터 분할 선택: `test`, `train`, `all` (기본: all) |
+
+### 데이터 분할 (--split)
+
+| 값 | 설명 | 사용 파일 |
+|----|------|----------|
+| `test` | test 데이터만 처리 | `test.json`, `testlabel/` |
+| `train` | train 데이터만 처리 | `train.json` (mmoffice는 미지원) |
+| `all` (기본) | 전체 데이터 처리 | `all_labels.json` |
 
 ### 사용법
 
@@ -715,6 +739,12 @@ cd /home/ubuntu/cvat-multiview/scripts/init
 # 로컬 테스트
 ./setup_ielab_production.sh --local all
 ./setup_ielab_production.sh --local --multi-class all
+
+# 데이터 분할 옵션 사용
+./setup_ielab_production.sh --split test all           # test 데이터만
+./setup_ielab_production.sh --split train all          # train 데이터만
+./setup_ielab_production.sh --split test --multi-class all  # test + 다중 클래스
+./setup_ielab_production.sh --local --split test --multi-class all  # 로컬 test + 다중 클래스
 ```
 
 ### Pre-annotation 라벨 모드

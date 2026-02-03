@@ -331,6 +331,13 @@ python scripts/init/insert_bbox_annotations.py \
     --data-dir /path/to/dataset \
     --datasets multisensor_home1 \
     --use-dataset-labels
+
+# 데이터 분할 선택 (test 데이터만)
+python scripts/init/insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /path/to/dataset \
+    --split test \
+    --use-dataset-labels
 ```
 
 ### 라벨 모드
@@ -339,6 +346,14 @@ python scripts/init/insert_bbox_annotations.py \
 |------|------|------|
 | 이진분류 (기본) | `--label Sound` | 모든 bbox에 단일 "Sound" 라벨 적용 |
 | 다중 클래스 | `--use-dataset-labels` | 데이터셋의 실제 클래스 라벨 사용 |
+
+### 데이터 분할 (--split)
+
+| 값 | 설명 | 사용 파일 |
+|----|------|----------|
+| `test` | test 데이터만 처리 | `test.json`, `testlabel/` |
+| `train` | train 데이터만 처리 | `train.json` (mmoffice는 미지원) |
+| `all` (기본) | 전체 데이터 처리 | `all_labels.json` |
 
 **다중 클래스 모드 동작**:
 - 세그먼트별 모든 라벨에 대해 bbox 생성
@@ -358,9 +373,47 @@ python scripts/init/insert_bbox_annotations.py \
 
 ## Last Updated
 
-2026-02-03 (Multi-class Pre-annotation 지원 + Shell 옵션 - v10)
+2026-02-03 (Data Split 옵션 추가 - v11)
 
-### 최근 변경 사항 (2026-02-03) - v10
+### 최근 변경 사항 (2026-02-03) - v11
+
+**수정된 파일**:
+- `scripts/init/insert_bbox_annotations.py`
+- `scripts/init/setup_ielab_production.sh`
+- `scripts/init/README.md`
+
+#### `--split` 옵션 추가
+
+데이터 분할(test/train/all)을 선택하여 pre-annotation을 적용할 수 있습니다.
+
+1. **Python 스크립트 (`--split`)**
+   - `test`: test.json 또는 testlabel/ 사용
+   - `train`: train.json 사용 (mmoffice는 trainlabel 없으므로 스킵)
+   - `all` (기본): all_labels.json 사용
+
+2. **Shell 스크립트 (`--split VALUE`)**
+   - `setup_ielab_production.sh`에 `--split` 옵션 추가
+   - 예: `./setup_ielab_production.sh --local --split test --multi-class all`
+
+**CLI 사용법**:
+```bash
+# Python 스크립트
+python insert_bbox_annotations.py --user admin --password admin123 ... --split test
+
+# Shell 스크립트
+./setup_ielab_production.sh --split test all               # test만
+./setup_ielab_production.sh --split train all              # train만
+./setup_ielab_production.sh --split test --multi-class all # test + 다중 클래스
+./setup_ielab_production.sh --local --split test --multi-class all  # 로컬 test + 다중 클래스
+```
+
+**테스트 결과 (`--split test --multi-class`)**:
+- 1,047 tasks 생성 (전체)
+- 7,250 shapes 삽입 (test 데이터만, 162 tasks에 pre-annotation)
+- 236 tasks 스킵 (test.json에 해당 세션 없음)
+- worker01: 524 tasks, worker02: 523 tasks 균등 할당
+
+### 이전 변경 사항 (2026-02-03) - v10
 
 **수정된 파일**:
 - `scripts/init/insert_bbox_annotations.py`

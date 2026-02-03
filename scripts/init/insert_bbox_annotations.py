@@ -1,35 +1,42 @@
 #!/usr/bin/env python3
 """
-Insert Bbox Annotations from all_labels.json
+Insert Bbox Annotations from label JSON/CSV files
 
 Reads pre-labeled data and inserts bbox annotations at start, middle, and end
 times of each labeled segment into corresponding CVAT tasks.
 
 데이터셋별 파일 형식:
-    - multisensor_home1/2: all_labels.json (시간 단위: 초)
-    - mmoffice: label/testlabel/recidXXX.csv (시간 단위: 프레임)
+    - multisensor_home1/2: test.json, train.json, all_labels.json (시간 단위: 초)
+    - mmoffice: label/testlabel/recidXXX.csv (시간 단위: 프레임, test만 지원)
 
 사용법:
-    # Dry-run으로 미리보기
+    # Dry-run으로 미리보기 (전체 - 기본)
     python insert_bbox_annotations.py \\
         --user admin --password admin123 \\
         --data-dir /path/to/dataset \\
         --datasets multisensor_home1 \\
         --dry-run --limit 5
 
-    # 실제 삽입 (이진분류 - 기본 동작)
-    python insert_bbox_annotations.py \\
-        --user admin --password admin123 \\
-        --data-dir /path/to/dataset \\
-        --datasets multisensor_home1 multisensor_home2 mmoffice \\
-        --fps 30 --bbox-size 100 --divisions 3
-
-    # 다중 클래스 사용
+    # test 데이터만 처리
     python insert_bbox_annotations.py \\
         --user admin --password admin123 \\
         --data-dir /path/to/dataset \\
         --datasets multisensor_home1 \\
-        --use-dataset-labels
+        --split test
+
+    # train 데이터만 처리
+    python insert_bbox_annotations.py \\
+        --user admin --password admin123 \\
+        --data-dir /path/to/dataset \\
+        --datasets multisensor_home1 \\
+        --split train
+
+    # 다중 클래스 + test만
+    python insert_bbox_annotations.py \\
+        --user admin --password admin123 \\
+        --data-dir /path/to/dataset \\
+        --datasets multisensor_home1 \\
+        --split test --use-dataset-labels
 """
 
 import argparse
@@ -57,6 +64,14 @@ DEFAULT_DIVISIONS = 3
 DEFAULT_VIEW_COUNT = 5
 DEFAULT_DATASETS = ["multisensor_home1", "multisensor_home2", "mmoffice"]
 DEFAULT_LABEL_NAME = "Sound"
+DEFAULT_SPLIT = "all"  # "test", "train", "all"
+
+# Split to JSON file mapping for multisensor datasets
+SPLIT_JSON_FILES = {
+    "test": "test.json",
+    "train": "train.json",
+    "all": "all_labels.json"
+}
 
 
 # ============================================================================
@@ -648,7 +663,8 @@ def process_multisensor_dataset(
     org: Optional[str],
     dry_run: bool,
     limit: Optional[int],
-    use_dataset_labels: bool = False
+    use_dataset_labels: bool = False,
+    split: str = "all"
 ) -> Tuple[int, int, int]:
     """
     Process a multisensor dataset.
@@ -656,19 +672,22 @@ def process_multisensor_dataset(
     Args:
         use_dataset_labels: If True, use actual class labels from dataset.
                            If False (default), use single binary label.
+        split: "test", "train", or "all" (default)
 
     Returns:
         (tasks_processed, shapes_created, tasks_skipped)
     """
-    json_path = data_dir / dataset_name / "all_labels.json"
+    # Select JSON file based on split
+    json_filename = SPLIT_JSON_FILES.get(split, "all_labels.json")
+    json_path = data_dir / dataset_name / json_filename
 
     if not json_path.exists():
-        print(f"  [SKIP] all_labels.json not found: {json_path}")
+        print(f"  [SKIP] {json_filename} not found: {json_path}")
         return (0, 0, 0)
 
-    print(f"  Loading all_labels.json...")
+    print(f"  Loading {json_filename}...")
     entries = parse_multisensor_json(json_path, dataset_name)
-    print(f"  Found {len(entries)} entries")
+    print(f"  Found {len(entries)} entries (split: {split})")
 
     if limit and len(entries) > limit:
         entries = entries[:limit]
@@ -875,7 +894,8 @@ def process_mmoffice_dataset(
     org: Optional[str],
     dry_run: bool,
     limit: Optional[int],
-    use_dataset_labels: bool = False
+    use_dataset_labels: bool = False,
+    split: str = "all"
 ) -> Tuple[int, int, int]:
     """
     Process mmoffice dataset.
@@ -883,10 +903,16 @@ def process_mmoffice_dataset(
     Args:
         use_dataset_labels: If True, use actual class labels (class_1, class_2, etc.).
                            If False (default), use single binary label.
+        split: "test", "train", or "all". Note: mmoffice only has test labels.
 
     Returns:
         (tasks_processed, shapes_created, tasks_skipped)
     """
+    # mmoffice only has test labels (trainlabel directory has no recid*.csv files)
+    if split == "train":
+        print(f"  [SKIP] mmoffice has no train labels (only test labels available)")
+        return (0, 0, 0)
+
     label_dir = data_dir / "mmoffice" / "label" / "testlabel"
 
     if not label_dir.exists():
@@ -1140,6 +1166,20 @@ Examples:
       --datasets multisensor_home1 \\
       --use-dataset-labels
 
+  # Test data only
+  python insert_bbox_annotations.py \\
+      --user admin --password admin123 \\
+      --data-dir /path/to/dataset \\
+      --datasets multisensor_home1 \\
+      --split test
+
+  # Train data only
+  python insert_bbox_annotations.py \\
+      --user admin --password admin123 \\
+      --data-dir /path/to/dataset \\
+      --datasets multisensor_home1 \\
+      --split train
+
   # Custom binary label name
   python insert_bbox_annotations.py \\
       --user admin --password admin123 \\
@@ -1183,6 +1223,9 @@ Examples:
                         default=False,
                         help='Use actual class labels from dataset instead of single binary label. '
                              'Creates labels dynamically if they do not exist.')
+    parser.add_argument('--split', choices=['test', 'train', 'all'], default=DEFAULT_SPLIT,
+                        help=f'Data split to process: test, train, or all (default: {DEFAULT_SPLIT}). '
+                             'Note: mmoffice only has test labels.')
 
     args = parser.parse_args()
 
@@ -1199,11 +1242,12 @@ Examples:
 
     # Print header
     print("=" * 60)
-    print("  Insert Bbox Annotations from all_labels.json")
+    print("  Insert Bbox Annotations")
     print("=" * 60)
     print(f"Host: {args.host}")
     print(f"Data directory: {data_dir}")
     print(f"Datasets: {', '.join(args.datasets)}")
+    print(f"Split: {args.split}")
     print(f"FPS: {args.fps}")
     print(f"Bbox size: {args.bbox_size}x{args.bbox_size}")
     print(f"Divisions: {args.divisions}")
@@ -1247,7 +1291,8 @@ Examples:
                 org=args.org,
                 dry_run=args.dry_run,
                 limit=args.limit,
-                use_dataset_labels=args.use_dataset_labels
+                use_dataset_labels=args.use_dataset_labels,
+                split=args.split
             )
         elif dataset == "mmoffice":
             tasks, shapes, skipped = process_mmoffice_dataset(
@@ -1262,7 +1307,8 @@ Examples:
                 org=args.org,
                 dry_run=args.dry_run,
                 limit=args.limit,
-                use_dataset_labels=args.use_dataset_labels
+                use_dataset_labels=args.use_dataset_labels,
+                split=args.split
             )
         else:
             print(f"  [SKIP] Unknown dataset type: {dataset}")
