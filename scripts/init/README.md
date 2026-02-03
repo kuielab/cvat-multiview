@@ -467,18 +467,25 @@ python quick_test.py
 각 라벨 세그먼트의 시작/중간/끝 프레임에 bbox를 생성하여 CVAT task에 삽입합니다.
 
 ```bash
-# Dry-run 미리보기
+# Dry-run 미리보기 (이진분류 - 기본)
 python insert_bbox_annotations.py \
     --user admin --password admin123 \
     --data-dir /mnt/data \
     --datasets multisensor_home1 \
     --dry-run --limit 5
 
-# 실제 삽입
+# 실제 삽입 (이진분류)
 python insert_bbox_annotations.py \
     --user admin --password admin123 \
     --data-dir /mnt/data \
     --datasets multisensor_home1 multisensor_home2 mmoffice
+
+# 다중 클래스 모드 (실제 라벨 사용)
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 \
+    --use-dataset-labels
 
 # 커스텀 bbox 크기 및 분할 수
 python insert_bbox_annotations.py \
@@ -495,6 +502,20 @@ python insert_bbox_annotations.py \
 | multisensor_home1/2 | `all_labels.json` | 초 (seconds) |
 | mmoffice (test) | `testlabel/recidXXX.csv` | 프레임 (frames) |
 
+**라벨 모드:**
+
+| 모드 | 옵션 | 설명 |
+|------|------|------|
+| 이진분류 (기본) | `--label Sound` | 모든 bbox에 단일 "Sound" 라벨 적용 |
+| 다중 클래스 | `--use-dataset-labels` | 데이터셋의 실제 클래스 라벨 사용 |
+
+**다중 클래스 모드 (`--use-dataset-labels`):**
+- 세그먼트별 모든 라벨에 대해 bbox 생성
+- 예: `["Sitdown", "UsePhone"]` + 3 frames = 6 shapes (각 라벨 × 각 프레임)
+- Task에 없는 라벨은 자동으로 생성 (PATCH /api/tasks/{id})
+- multisensor_home: `Sitdown`, `Standup`, `Eat`, `Drink`, `ReadBook` 등 16개
+- mmoffice: `class_1`, `class_2`, ... `class_12` 형태
+
 **옵션:**
 | 옵션 | 설명 | 기본값 |
 |------|------|--------|
@@ -507,6 +528,9 @@ python insert_bbox_annotations.py \
 | `--fps` | FPS (시간→프레임 변환용) | `30` |
 | `--bbox-size` | Bbox 크기 (픽셀) | `100` |
 | `--divisions` | 세그먼트당 bbox 분할 수 | `3` (start, mid, end) |
+| `--view-count` | 뷰 개수 | `5` |
+| `--label` | 라벨 이름 (이진분류 시) | `Sound` |
+| `--use-dataset-labels` | 다중 클래스 모드 활성화 | `false` |
 | `--limit` | 최대 처리 task 수 | 무제한 |
 | `--dry-run` | 실제 삽입 없이 미리보기 | - |
 
@@ -650,10 +674,17 @@ EC2 서버 배포를 위한 전용 스크립트입니다.
 
 ### 균등 분배 설정
 
-| Organization | MMOffice | Home1 | Home2 |
-|--------------|----------|-------|-------|
-| worker01 | 세션 01-06 (6개) | 세션 00-09 (10개) | 세션 00-09 (10개) |
-| worker02 | 세션 07-12 (6개) | 세션 10-19 (10개) | 세션 10-19 (10개) |
+| Organization | 총 Task | Home1 | Home2 | MMOffice |
+|--------------|---------|-------|-------|----------|
+| worker01 | 524 | 59 | 61 | 404 |
+| worker02 | 523 | 58 | 61 | 404 |
+
+### 옵션
+
+| 옵션 | 설명 |
+|------|------|
+| `--local` | 로컬 테스트 모드 (localhost:8080) |
+| `--multi-class` | 다중 클래스 라벨 사용 (기본: 이진분류 Sound) |
 
 ### 사용법
 
@@ -661,21 +692,34 @@ EC2 서버 배포를 위한 전용 스크립트입니다.
 # EC2 서버에서 실행
 cd /home/ubuntu/cvat-multiview/scripts/init
 
-# 전체 설정 (Superuser + Orgs + Users + Tasks)
+# 전체 설정 (이진분류 - 기본)
 ./setup_ielab_production.sh all
 
-# 계정 설정만 (Tasks 제외)
-./setup_ielab_production.sh setup
+# 전체 설정 (다중 클래스)
+./setup_ielab_production.sh --multi-class all
 
-# 유저 재생성 (기존 유저 삭제 후)
-./setup_ielab_production.sh users
+# 개별 단계 실행
+./setup_ielab_production.sh setup       # Superuser, Org, User 생성
+./setup_ielab_production.sh tasks       # Task 생성
+./setup_ielab_production.sh prelabels   # Pre-annotation (이진분류)
+./setup_ielab_production.sh --multi-class prelabels  # Pre-annotation (다중 클래스)
+./setup_ielab_production.sh assign      # Task 조직 할당
+./setup_ielab_production.sh verify      # 설정 검증
 
-# Task 할당 미리보기
-./setup_ielab_production.sh assign-dry
-
-# Task 실제 할당
-./setup_ielab_production.sh assign
+# 데이터 초기화
+./setup_ielab_production.sh reset
 
 # 계정 정보 확인
 ./setup_ielab_production.sh info
+
+# 로컬 테스트
+./setup_ielab_production.sh --local all
+./setup_ielab_production.sh --local --multi-class all
 ```
+
+### Pre-annotation 라벨 모드
+
+| 모드 | 옵션 | 라벨 예시 |
+|------|------|----------|
+| 이진분류 (기본) | - | `Sound` |
+| 다중 클래스 | `--multi-class` | `Sitdown`, `Standup`, `ReadBook`, `class_1`~`class_12` |

@@ -311,20 +311,40 @@ http://127.0.0.1:8080/tasks/{task_id}/jobs/{job_id}
 ### 사용법
 
 ```bash
-# Dry-run 미리보기
+# Dry-run 미리보기 (이진분류 - 기본)
 python scripts/init/insert_bbox_annotations.py \
     --user admin --password admin123 \
     --data-dir /path/to/dataset \
     --datasets multisensor_home1 \
     --dry-run --limit 5
 
-# 실제 삽입 (bbox 300x300, 구간당 3개 분할)
+# 실제 삽입 (bbox 300x300, 구간당 3개 분할, 이진분류)
 python scripts/init/insert_bbox_annotations.py \
     --user admin --password admin123 \
     --data-dir /path/to/dataset \
     --datasets multisensor_home1 multisensor_home2 mmoffice \
     --bbox-size 300 --divisions 3
+
+# 다중 클래스 모드 (실제 라벨 사용)
+python scripts/init/insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /path/to/dataset \
+    --datasets multisensor_home1 \
+    --use-dataset-labels
 ```
+
+### 라벨 모드
+
+| 모드 | 옵션 | 설명 |
+|------|------|------|
+| 이진분류 (기본) | `--label Sound` | 모든 bbox에 단일 "Sound" 라벨 적용 |
+| 다중 클래스 | `--use-dataset-labels` | 데이터셋의 실제 클래스 라벨 사용 |
+
+**다중 클래스 모드 동작**:
+- 세그먼트별 모든 라벨에 대해 bbox 생성
+- 예: `["Sitdown", "UsePhone"]` + 3 frames = 6 shapes (각 라벨 × 각 프레임)
+- Task에 없는 라벨은 자동으로 생성 (PATCH /api/tasks/{id})
+- mmoffice: `class_1`, `class_2`, ... `class_12` 형태
 
 ### divisions 옵션
 
@@ -338,9 +358,58 @@ python scripts/init/insert_bbox_annotations.py \
 
 ## Last Updated
 
-2026-02-03 (Pre-annotation 스크립트 추가 - v9)
+2026-02-03 (Multi-class Pre-annotation 지원 + Shell 옵션 - v10)
 
-### 최근 변경 사항 (2026-02-03) - v9
+### 최근 변경 사항 (2026-02-03) - v10
+
+**수정된 파일**:
+- `scripts/init/insert_bbox_annotations.py`
+- `scripts/init/setup_ielab_production.sh`
+- `scripts/init/README.md`
+
+#### Multi-class Pre-annotation 지원 추가
+
+1. **`--use-dataset-labels` 옵션 추가 (Python)**
+   - 기본값(False): 기존 이진분류 동작 유지 (단일 "Sound" 라벨)
+   - True: 데이터셋의 실제 클래스 라벨 사용
+
+2. **`--multi-class` 옵션 추가 (Shell)**
+   - `setup_ielab_production.sh`에 다중 클래스 모드 지원
+   - 예: `./setup_ielab_production.sh --local --multi-class all`
+
+3. **동적 라벨 생성 (`ensure_labels_exist` 함수)**
+   - Task에 없는 라벨 자동 생성 (PATCH /api/tasks/{id})
+   - Pre-annotation 시점에 라벨 추가 가능
+
+4. **다중 라벨 세그먼트 처리**
+   - 세그먼트의 모든 라벨에 대해 bbox 생성
+   - 예: `["Sitdown", "UsePhone"]` → 동일 위치에 2개 bbox (각각 다른 라벨)
+   - (frame, label, view_id) 조합으로 중복 방지
+
+5. **데이터셋별 클래스**
+   - multisensor_home1/2: Sitdown, Standup, Eat, Drink, ReadBook, UseLaptop 등 16개
+   - mmoffice: class_1 ~ class_12 (숫자 ID → 라벨명)
+
+**CLI 사용법**:
+```bash
+# Python 스크립트 직접 실행
+python insert_bbox_annotations.py --user admin --password admin123 ... --use-dataset-labels
+
+# Shell 스크립트 (프로덕션/로컬)
+./setup_ielab_production.sh --multi-class all                    # 프로덕션
+./setup_ielab_production.sh --local --multi-class all            # 로컬
+./setup_ielab_production.sh --local --multi-class prelabels      # Pre-annotation만
+```
+
+**테스트 결과 (다중 클래스 모드)**:
+- 1,047 tasks 생성 (home1: 117, home2: 122, mmoffice: 808)
+- 11,115 shapes 삽입 (263 tasks에 pre-annotation)
+- 다중 클래스 라벨 예시:
+  - `multisensor_home1_01-00-Part1`: Sound, Sitdown, Standup, ReadBook
+  - `mmoffice_test_*`: Sound, class_5, class_8, class_11
+- worker01: 524 tasks, worker02: 523 tasks 균등 할당
+
+### 이전 변경 사항 (2026-02-03) - v9
 
 **추가된 파일**: `scripts/init/insert_bbox_annotations.py`, `scripts/init/insert_prelabels.sh`
 

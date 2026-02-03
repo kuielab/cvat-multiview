@@ -17,12 +17,19 @@ times of each labeled segment into corresponding CVAT tasks.
         --datasets multisensor_home1 \\
         --dry-run --limit 5
 
-    # 실제 삽입
+    # 실제 삽입 (이진분류 - 기본 동작)
     python insert_bbox_annotations.py \\
         --user admin --password admin123 \\
         --data-dir /path/to/dataset \\
         --datasets multisensor_home1 multisensor_home2 mmoffice \\
         --fps 30 --bbox-size 100 --divisions 3
+
+    # 다중 클래스 사용
+    python insert_bbox_annotations.py \\
+        --user admin --password admin123 \\
+        --data-dir /path/to/dataset \\
+        --datasets multisensor_home1 \\
+        --use-dataset-labels
 """
 
 import argparse
@@ -469,6 +476,81 @@ def find_label_id(
     return None
 
 
+def ensure_labels_exist(
+    host: str,
+    session: requests.Session,
+    task_id: int,
+    label_names: Set[str],
+    org: Optional[str] = None
+) -> Dict[str, int]:
+    """
+    Ensure all required labels exist on the task, creating any that are missing.
+
+    Args:
+        host: CVAT host URL
+        session: Authenticated session
+        task_id: Task ID to check/update
+        label_names: Set of label names that must exist
+        org: Organization slug
+
+    Returns:
+        Dict mapping label names to their IDs
+    """
+    headers = get_headers(session, org)
+
+    # 1. Get existing labels
+    existing_labels = get_task_labels(host, session, task_id, org)
+    existing_map = {label['name']: label['id'] for label in existing_labels}
+
+    # 2. Find missing labels
+    missing = label_names - set(existing_map.keys())
+
+    if not missing:
+        return existing_map
+
+    # 3. Add missing labels via PATCH /api/tasks/{id}
+    print(f"      Creating {len(missing)} new labels: {', '.join(sorted(missing))}")
+
+    # Build new labels list (existing + new)
+    new_labels = [
+        {"name": name, "type": "rectangle", "attributes": []}
+        for name in missing
+    ]
+
+    # We need to send all labels (existing + new) because PATCH replaces the labels array
+    all_labels = []
+    for label in existing_labels:
+        # Keep only essential fields to avoid conflicts
+        all_labels.append({
+            "id": label.get("id"),
+            "name": label.get("name"),
+            "type": label.get("type", "rectangle"),
+            "attributes": label.get("attributes", [])
+        })
+    all_labels.extend(new_labels)
+
+    try:
+        headers['Content-Type'] = 'application/json'
+        response = session.patch(
+            f"{host}/api/tasks/{task_id}",
+            json={"labels": all_labels},
+            headers=headers,
+            timeout=30
+        )
+
+        if response.status_code not in [200, 201]:
+            print(f"      [ERROR] Failed to create labels: {response.status_code} - {response.text[:200]}")
+            return existing_map
+
+        # 4. Re-fetch labels to get IDs for new labels
+        updated_labels = get_task_labels(host, session, task_id, org)
+        return {label['name']: label['id'] for label in updated_labels}
+
+    except Exception as e:
+        print(f"      [ERROR] Create labels: {e}")
+        return existing_map
+
+
 def insert_annotations(
     host: str,
     session: requests.Session,
@@ -565,10 +647,15 @@ def process_multisensor_dataset(
     label_name: str,
     org: Optional[str],
     dry_run: bool,
-    limit: Optional[int]
+    limit: Optional[int],
+    use_dataset_labels: bool = False
 ) -> Tuple[int, int, int]:
     """
     Process a multisensor dataset.
+
+    Args:
+        use_dataset_labels: If True, use actual class labels from dataset.
+                           If False (default), use single binary label.
 
     Returns:
         (tasks_processed, shapes_created, tasks_skipped)
@@ -633,53 +720,130 @@ def process_multisensor_dataset(
         cx, cy = width / 2, height / 2
         print(f"    Dimensions: {width}x{height}")
 
-        # Get label
-        labels = get_task_labels(host, session, task_id, org)
-        label_id = find_label_id(labels, label_name)
+        # Get or create labels
+        if use_dataset_labels:
+            # Collect all unique labels from segments
+            all_label_names: Set[str] = set()
+            for segment in entry.segments:
+                all_label_names.update(segment.labels)
 
-        if not label_id:
-            print(f"    [SKIP] Label '{label_name}' not found")
-            tasks_skipped += 1
-            continue
+            if not all_label_names:
+                print(f"    [SKIP] No labels found in segments")
+                tasks_skipped += 1
+                continue
 
-        print(f"    Label ID: {label_id}")
+            print(f"    Dataset labels: {', '.join(sorted(all_label_names))}")
 
-        # Build shapes (one per view per frame)
+            # Ensure all labels exist (create if missing)
+            if dry_run:
+                # In dry-run, just get existing labels
+                labels = get_task_labels(host, session, task_id, org)
+                label_map = {label['name']: label['id'] for label in labels}
+                missing = all_label_names - set(label_map.keys())
+                if missing:
+                    print(f"    [DRY RUN] Would create labels: {', '.join(sorted(missing))}")
+                    # Assign fake IDs for dry-run
+                    fake_id = 999000
+                    for name in missing:
+                        label_map[name] = fake_id
+                        fake_id += 1
+            else:
+                label_map = ensure_labels_exist(host, session, task_id, all_label_names, org)
+
+            # Verify all labels have IDs
+            missing_ids = [name for name in all_label_names if name not in label_map]
+            if missing_ids:
+                print(f"    [SKIP] Could not get/create labels: {', '.join(missing_ids)}")
+                tasks_skipped += 1
+                continue
+        else:
+            # Binary classification: use single label
+            labels = get_task_labels(host, session, task_id, org)
+            label_id = find_label_id(labels, label_name)
+
+            if not label_id:
+                print(f"    [SKIP] Label '{label_name}' not found")
+                tasks_skipped += 1
+                continue
+
+            print(f"    Label ID: {label_id}")
+            label_map = {label_name: label_id}
+
+        # Build shapes
         shapes = []
-        seen_frames: Set[int] = set()
 
-        for segment in entry.segments:
-            frame_positions = calculate_frame_positions(
-                segment.start,
-                segment.end,
-                divisions,
-                fps,
-                segment.is_frame_based
-            )
+        if use_dataset_labels:
+            # Multi-class: create shapes for each label in each segment
+            # Track (frame, label, view_id) to avoid duplicates
+            seen_combinations: Set[Tuple[int, str, int]] = set()
 
-            for frame in frame_positions:
-                # Clamp frame to job range
-                frame = max(0, min(frame, job_stop_frame))
+            for segment in entry.segments:
+                frame_positions = calculate_frame_positions(
+                    segment.start,
+                    segment.end,
+                    divisions,
+                    fps,
+                    segment.is_frame_based
+                )
 
-                if frame not in seen_frames:
-                    seen_frames.add(frame)
-                    bbox = create_centered_bbox(cx, cy, bbox_size)
-                    # Create one shape for each view
-                    for view_id in range(view_count):
-                        shapes.append({
-                            "type": "rectangle",
-                            "frame": frame,
-                            "label_id": label_id,
-                            "points": bbox,
-                            "occluded": False,
-                            "z_order": 0,
-                            "rotation": 0.0,
-                            "view_id": view_id,
-                            "attributes": []
-                        })
+                for frame in frame_positions:
+                    frame = max(0, min(frame, job_stop_frame))
 
-        print(f"    Segments: {len(entry.segments)} → {len(shapes)} shapes ({len(seen_frames)} frames × {view_count} views)")
-        print(f"    Frames: {sorted(seen_frames)[:10]}{'...' if len(seen_frames) > 10 else ''}")
+                    for segment_label in segment.labels:
+                        for view_id in range(view_count):
+                            combo = (frame, segment_label, view_id)
+                            if combo not in seen_combinations:
+                                seen_combinations.add(combo)
+                                bbox = create_centered_bbox(cx, cy, bbox_size)
+                                shapes.append({
+                                    "type": "rectangle",
+                                    "frame": frame,
+                                    "label_id": label_map[segment_label],
+                                    "points": bbox,
+                                    "occluded": False,
+                                    "z_order": 0,
+                                    "rotation": 0.0,
+                                    "view_id": view_id,
+                                    "attributes": []
+                                })
+
+            unique_frames = len(set(combo[0] for combo in seen_combinations))
+            unique_labels = len(set(combo[1] for combo in seen_combinations))
+            print(f"    Segments: {len(entry.segments)} → {len(shapes)} shapes ({unique_frames} frames × {unique_labels} labels × {view_count} views)")
+        else:
+            # Binary classification: one shape per frame per view
+            seen_frames: Set[int] = set()
+
+            for segment in entry.segments:
+                frame_positions = calculate_frame_positions(
+                    segment.start,
+                    segment.end,
+                    divisions,
+                    fps,
+                    segment.is_frame_based
+                )
+
+                for frame in frame_positions:
+                    frame = max(0, min(frame, job_stop_frame))
+
+                    if frame not in seen_frames:
+                        seen_frames.add(frame)
+                        bbox = create_centered_bbox(cx, cy, bbox_size)
+                        for view_id in range(view_count):
+                            shapes.append({
+                                "type": "rectangle",
+                                "frame": frame,
+                                "label_id": label_map[label_name],
+                                "points": bbox,
+                                "occluded": False,
+                                "z_order": 0,
+                                "rotation": 0.0,
+                                "view_id": view_id,
+                                "attributes": []
+                            })
+
+            print(f"    Segments: {len(entry.segments)} → {len(shapes)} shapes ({len(seen_frames)} frames × {view_count} views)")
+            print(f"    Frames: {sorted(seen_frames)[:10]}{'...' if len(seen_frames) > 10 else ''}")
 
         if dry_run:
             print(f"    [DRY RUN] Would create {len(shapes)} shapes")
@@ -710,10 +874,15 @@ def process_mmoffice_dataset(
     label_name: str,
     org: Optional[str],
     dry_run: bool,
-    limit: Optional[int]
+    limit: Optional[int],
+    use_dataset_labels: bool = False
 ) -> Tuple[int, int, int]:
     """
     Process mmoffice dataset.
+
+    Args:
+        use_dataset_labels: If True, use actual class labels (class_1, class_2, etc.).
+                           If False (default), use single binary label.
 
     Returns:
         (tasks_processed, shapes_created, tasks_skipped)
@@ -790,49 +959,124 @@ def process_mmoffice_dataset(
 
             cx, cy = width / 2, height / 2
 
-            # Get label
-            labels = get_task_labels(host, session, task_id, org)
-            label_id = find_label_id(labels, label_name)
+            # Get or create labels
+            if use_dataset_labels:
+                # Collect all unique labels from segments (class_1, class_2, etc.)
+                all_label_names: Set[str] = set()
+                for segment in entry.segments:
+                    all_label_names.update(segment.labels)
 
-            if not label_id:
-                print(f"      [SKIP] Label '{label_name}' not found")
-                tasks_skipped += 1
-                continue
+                if not all_label_names:
+                    print(f"      [SKIP] No labels found in segments")
+                    tasks_skipped += 1
+                    continue
 
-            # Build shapes (one per view per frame)
+                print(f"      Dataset labels: {', '.join(sorted(all_label_names))}")
+
+                # Ensure all labels exist (create if missing)
+                if dry_run:
+                    labels = get_task_labels(host, session, task_id, org)
+                    label_map = {label['name']: label['id'] for label in labels}
+                    missing = all_label_names - set(label_map.keys())
+                    if missing:
+                        print(f"      [DRY RUN] Would create labels: {', '.join(sorted(missing))}")
+                        fake_id = 999000
+                        for name in missing:
+                            label_map[name] = fake_id
+                            fake_id += 1
+                else:
+                    label_map = ensure_labels_exist(host, session, task_id, all_label_names, org)
+
+                missing_ids = [name for name in all_label_names if name not in label_map]
+                if missing_ids:
+                    print(f"      [SKIP] Could not get/create labels: {', '.join(missing_ids)}")
+                    tasks_skipped += 1
+                    continue
+            else:
+                # Binary classification: use single label
+                labels = get_task_labels(host, session, task_id, org)
+                label_id = find_label_id(labels, label_name)
+
+                if not label_id:
+                    print(f"      [SKIP] Label '{label_name}' not found")
+                    tasks_skipped += 1
+                    continue
+
+                label_map = {label_name: label_id}
+
+            # Build shapes
             shapes = []
-            seen_frames: Set[int] = set()
 
-            for segment in entry.segments:
-                frame_positions = calculate_frame_positions(
-                    segment.start,
-                    segment.end,
-                    divisions,
-                    fps,
-                    segment.is_frame_based
-                )
+            if use_dataset_labels:
+                # Multi-class: create shapes for each label in each segment
+                seen_combinations: Set[Tuple[int, str, int]] = set()
 
-                for frame in frame_positions:
-                    frame = max(0, min(frame, job_stop_frame))
+                for segment in entry.segments:
+                    frame_positions = calculate_frame_positions(
+                        segment.start,
+                        segment.end,
+                        divisions,
+                        fps,
+                        segment.is_frame_based
+                    )
 
-                    if frame not in seen_frames:
-                        seen_frames.add(frame)
-                        bbox = create_centered_bbox(cx, cy, bbox_size)
-                        # Create one shape for each view
-                        for view_id in range(view_count):
-                            shapes.append({
-                                "type": "rectangle",
-                                "frame": frame,
-                                "label_id": label_id,
-                                "points": bbox,
-                                "occluded": False,
-                                "z_order": 0,
-                                "rotation": 0.0,
-                                "view_id": view_id,
-                                "attributes": []
-                            })
+                    for frame in frame_positions:
+                        frame = max(0, min(frame, job_stop_frame))
 
-            print(f"      Segments: {len(entry.segments)} → {len(shapes)} shapes ({len(seen_frames)} frames × {view_count} views)")
+                        for segment_label in segment.labels:
+                            for view_id in range(view_count):
+                                combo = (frame, segment_label, view_id)
+                                if combo not in seen_combinations:
+                                    seen_combinations.add(combo)
+                                    bbox = create_centered_bbox(cx, cy, bbox_size)
+                                    shapes.append({
+                                        "type": "rectangle",
+                                        "frame": frame,
+                                        "label_id": label_map[segment_label],
+                                        "points": bbox,
+                                        "occluded": False,
+                                        "z_order": 0,
+                                        "rotation": 0.0,
+                                        "view_id": view_id,
+                                        "attributes": []
+                                    })
+
+                unique_frames = len(set(combo[0] for combo in seen_combinations))
+                unique_labels = len(set(combo[1] for combo in seen_combinations))
+                print(f"      Segments: {len(entry.segments)} → {len(shapes)} shapes ({unique_frames} frames × {unique_labels} labels × {view_count} views)")
+            else:
+                # Binary classification: one shape per frame per view
+                seen_frames: Set[int] = set()
+
+                for segment in entry.segments:
+                    frame_positions = calculate_frame_positions(
+                        segment.start,
+                        segment.end,
+                        divisions,
+                        fps,
+                        segment.is_frame_based
+                    )
+
+                    for frame in frame_positions:
+                        frame = max(0, min(frame, job_stop_frame))
+
+                        if frame not in seen_frames:
+                            seen_frames.add(frame)
+                            bbox = create_centered_bbox(cx, cy, bbox_size)
+                            for view_id in range(view_count):
+                                shapes.append({
+                                    "type": "rectangle",
+                                    "frame": frame,
+                                    "label_id": label_map[label_name],
+                                    "points": bbox,
+                                    "occluded": False,
+                                    "z_order": 0,
+                                    "rotation": 0.0,
+                                    "view_id": view_id,
+                                    "attributes": []
+                                })
+
+                print(f"      Segments: {len(entry.segments)} → {len(shapes)} shapes ({len(seen_frames)} frames × {view_count} views)")
 
             if dry_run:
                 print(f"      [DRY RUN] Would create {len(shapes)} shapes")
@@ -862,7 +1106,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Dry-run test
+  # Dry-run test (binary classification - default)
   python insert_bbox_annotations.py \\
       --user admin --password admin123 \\
       --data-dir /path/to/dataset \\
@@ -888,6 +1132,19 @@ Examples:
       --user admin --password admin123 \\
       --data-dir /path/to/dataset \\
       --datasets mmoffice
+
+  # Multi-class mode (use actual class labels from dataset)
+  python insert_bbox_annotations.py \\
+      --user admin --password admin123 \\
+      --data-dir /path/to/dataset \\
+      --datasets multisensor_home1 \\
+      --use-dataset-labels
+
+  # Custom binary label name
+  python insert_bbox_annotations.py \\
+      --user admin --password admin123 \\
+      --data-dir /path/to/dataset \\
+      --label "Activity"
         """
     )
 
@@ -922,6 +1179,10 @@ Examples:
                         help='Limit number of tasks/files to process')
     parser.add_argument('--dry-run', action='store_true',
                         help='Preview without creating annotations')
+    parser.add_argument('--use-dataset-labels', action='store_true',
+                        default=False,
+                        help='Use actual class labels from dataset instead of single binary label. '
+                             'Creates labels dynamically if they do not exist.')
 
     args = parser.parse_args()
 
@@ -947,7 +1208,10 @@ Examples:
     print(f"Bbox size: {args.bbox_size}x{args.bbox_size}")
     print(f"Divisions: {args.divisions}")
     print(f"View count: {args.view_count}")
-    print(f"Label: {args.label}")
+    if args.use_dataset_labels:
+        print("Label mode: Multi-class (use dataset labels)")
+    else:
+        print(f"Label mode: Binary (single label: {args.label})")
     if args.dry_run:
         print("[DRY RUN MODE]")
     print("=" * 60)
@@ -982,7 +1246,8 @@ Examples:
                 label_name=args.label,
                 org=args.org,
                 dry_run=args.dry_run,
-                limit=args.limit
+                limit=args.limit,
+                use_dataset_labels=args.use_dataset_labels
             )
         elif dataset == "mmoffice":
             tasks, shapes, skipped = process_mmoffice_dataset(
@@ -996,7 +1261,8 @@ Examples:
                 label_name=args.label,
                 org=args.org,
                 dry_run=args.dry_run,
-                limit=args.limit
+                limit=args.limit,
+                use_dataset_labels=args.use_dataset_labels
             )
         else:
             print(f"  [SKIP] Unknown dataset type: {dataset}")
