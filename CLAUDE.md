@@ -290,11 +290,82 @@ http://127.0.0.1:8080/tasks/{task_id}/jobs/{job_id}
 
 ---
 
+## Init Scripts (Pre-annotation)
+
+### Pre-annotation 스크립트
+
+`scripts/init/` 폴더에 있는 스크립트들:
+
+| 스크립트 | 설명 |
+|---------|------|
+| `insert_bbox_annotations.py` | Pre-annotation bbox 삽입 (Python) |
+| `insert_prelabels.sh` | Pre-annotation 삽입 (Shell wrapper) |
+
+### Pre-annotation 데이터 형식
+
+| 데이터셋 | 파일 형식 | 시간 단위 |
+|----------|----------|----------|
+| multisensor_home1/2 | `all_labels.json` | 초 (seconds) |
+| mmoffice (test) | `testlabel/recidXXX.csv` | 프레임 (frames) |
+
+### 사용법
+
+```bash
+# Dry-run 미리보기
+python scripts/init/insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /path/to/dataset \
+    --datasets multisensor_home1 \
+    --dry-run --limit 5
+
+# 실제 삽입 (bbox 300x300, 구간당 3개 분할)
+python scripts/init/insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /path/to/dataset \
+    --datasets multisensor_home1 multisensor_home2 mmoffice \
+    --bbox-size 300 --divisions 3
+```
+
+### divisions 옵션
+
+| divisions | 분할 위치 | 설명 |
+|-----------|----------|------|
+| 2 | start, end | 시작/끝 프레임만 |
+| 3 (기본값) | start, mid, end | 시작/중간/끝 프레임 |
+| 5 | 0%, 25%, 50%, 75%, 100% | 5등분 |
+
+---
+
 ## Last Updated
 
-2026-01-30 (Docker 배포 구조 정리 - v8)
+2026-02-03 (Pre-annotation 스크립트 추가 - v9)
 
-### 최근 변경 사항 (2026-01-30) - v8
+### 최근 변경 사항 (2026-02-03) - v9
+
+**추가된 파일**: `scripts/init/insert_bbox_annotations.py`, `scripts/init/insert_prelabels.sh`
+
+#### Pre-annotation 스크립트 추가
+
+1. **insert_bbox_annotations.py**
+   - `all_labels.json` 또는 CSV 파일에서 라벨 세그먼트를 읽어 bbox 생성
+   - 각 세그먼트의 start/mid/end 프레임에 bbox 삽입
+   - multisensor_home1, multisensor_home2, mmoffice(test) 지원
+   - `--divisions` 옵션으로 분할 수 조절 가능
+
+2. **insert_prelabels.sh**
+   - Python 스크립트의 Shell wrapper
+   - 모든 옵션을 Python 스크립트에 전달
+
+3. **Exit code 수정**
+   - 스킵된 task가 있어도 실제 작업이 완료되면 exit code 0 반환
+   - mmoffice_train 데이터처럼 라벨이 없는 경우 정상 스킵
+
+**테스트 결과**:
+- 1,047 tasks 생성 (home1: 117, home2: 122, mmoffice: 808)
+- 10,905 shapes 삽입 (263 tasks에 pre-annotation)
+- worker01: 524 tasks, worker02: 523 tasks 균등 할당
+
+### 이전 변경 사항 (2026-01-30) - v8
 
 **수정된 파일**: `Dockerfile`, `docker-compose.yml`, `.github/workflows/docker-publish.yml`, `.gitignore`
 

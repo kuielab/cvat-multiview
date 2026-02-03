@@ -9,6 +9,8 @@ scripts/init/
 ├── setup_cvat.sh                     # 초기 설정 (Superuser + Organization + Users)
 ├── create_all_tasks.sh               # 모든 Task 일괄 생성
 ├── assign_tasks_to_orgs.sh           # 범위별로 Organization에 Task 할당
+├── insert_bbox_annotations.py        # Pre-annotation bbox 삽입 (Python)
+├── insert_prelabels.sh               # Pre-annotation 삽입 (Shell wrapper)
 ├── create_multisensor_home_tasks.py  # Home 데이터셋 Task 생성
 ├── create_mmoffice_tasks.py          # MMOffice 데이터셋 Task 생성
 ├── create_multiview_task.py          # 단일 Task 생성
@@ -455,6 +457,79 @@ python create_multiview_tasks.py --user admin --password admin123 \
 ```bash
 python quick_test.py
 ```
+
+---
+
+### 7. insert_bbox_annotations.py (Pre-annotation)
+
+**all_labels.json 또는 CSV 파일에서 Pre-annotation bbox를 삽입합니다.**
+
+각 라벨 세그먼트의 시작/중간/끝 프레임에 bbox를 생성하여 CVAT task에 삽입합니다.
+
+```bash
+# Dry-run 미리보기
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 \
+    --dry-run --limit 5
+
+# 실제 삽입
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 multisensor_home2 mmoffice
+
+# 커스텀 bbox 크기 및 분할 수
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --bbox-size 200 \
+    --divisions 5
+```
+
+**지원 데이터 형식:**
+
+| 데이터셋 | 파일 형식 | 시간 단위 |
+|----------|----------|----------|
+| multisensor_home1/2 | `all_labels.json` | 초 (seconds) |
+| mmoffice (test) | `testlabel/recidXXX.csv` | 프레임 (frames) |
+
+**옵션:**
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--user`, `-u` | CVAT 사용자명 | (필수) |
+| `--password`, `-p` | CVAT 비밀번호 | (필수) |
+| `--host` | CVAT 서버 URL | `http://localhost:8080` |
+| `--org` | Organization slug | - |
+| `--data-dir`, `-d` | 데이터셋 루트 경로 | (필수) |
+| `--datasets` | 처리할 데이터셋 | `multisensor_home1 multisensor_home2 mmoffice` |
+| `--fps` | FPS (시간→프레임 변환용) | `30` |
+| `--bbox-size` | Bbox 크기 (픽셀) | `100` |
+| `--divisions` | 세그먼트당 bbox 분할 수 | `3` (start, mid, end) |
+| `--limit` | 최대 처리 task 수 | 무제한 |
+| `--dry-run` | 실제 삽입 없이 미리보기 | - |
+
+**divisions 옵션:**
+| divisions | 분할 비율 | 예시 (start=0s, end=10s, fps=30) |
+|-----------|----------|----------------------------------|
+| 2 | 0%, 100% | frames: [0, 300] |
+| 3 (기본값) | 0%, 50%, 100% | frames: [0, 150, 300] |
+| 5 | 0%, 25%, 50%, 75%, 100% | frames: [0, 75, 150, 225, 300] |
+
+---
+
+### 8. insert_prelabels.sh (Shell wrapper)
+
+**insert_bbox_annotations.py의 Shell wrapper입니다.**
+
+```bash
+./insert_prelabels.sh --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 multisensor_home2
+```
+
+모든 옵션은 Python 스크립트에 그대로 전달됩니다.
 
 ---
 
