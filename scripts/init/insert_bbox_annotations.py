@@ -517,53 +517,68 @@ def ensure_labels_exist(
     existing_labels = get_task_labels(host, session, task_id, org)
     existing_map = {label['name']: label['id'] for label in existing_labels}
 
-    # 2. Find missing labels
+    # 2. Find missing labels and extra labels to remove
     missing = label_names - set(existing_map.keys())
+    extra = set(existing_map.keys()) - label_names  # Labels to remove (e.g., Sound, object)
 
-    if not missing:
+    if not missing and not extra:
         return existing_map
 
-    # 3. Add missing labels via PATCH /api/tasks/{id}
-    print(f"      Creating {len(missing)} new labels: {', '.join(sorted(missing))}")
+    # 3. Delete extra labels first (CVAT PATCH doesn't remove labels, only adds)
+    if extra:
+        print(f"      Removing {len(extra)} extra labels: {', '.join(sorted(extra))}")
+        for label_name in extra:
+            label_id = existing_map[label_name]
+            try:
+                del_response = session.delete(
+                    f"{host}/api/labels/{label_id}",
+                    headers=headers,
+                    timeout=30
+                )
+                if del_response.status_code not in [200, 204]:
+                    print(f"        [WARN] Failed to delete label '{label_name}': {del_response.status_code}")
+            except Exception as e:
+                print(f"        [WARN] Delete label '{label_name}': {e}")
 
-    # Build new labels list (existing + new)
-    new_labels = [
-        {"name": name, "type": "rectangle", "attributes": []}
-        for name in missing
-    ]
+    # 4. Add missing labels via PATCH /api/tasks/{id}
+    if missing:
+        print(f"      Creating {len(missing)} new labels: {', '.join(sorted(missing))}")
+        new_labels = [
+            {"name": name, "type": "rectangle", "attributes": []}
+            for name in missing
+        ]
 
-    # We need to send all labels (existing + new) because PATCH replaces the labels array
-    all_labels = []
-    for label in existing_labels:
-        # Keep only essential fields to avoid conflicts
-        all_labels.append({
-            "id": label.get("id"),
-            "name": label.get("name"),
-            "type": label.get("type", "rectangle"),
-            "attributes": label.get("attributes", [])
-        })
-    all_labels.extend(new_labels)
+        # Keep existing labels that are in label_names (not deleted)
+        all_labels = []
+        for label in existing_labels:
+            if label.get("name") in label_names:
+                all_labels.append({
+                    "id": label.get("id"),
+                    "name": label.get("name"),
+                    "type": label.get("type", "rectangle"),
+                    "attributes": label.get("attributes", [])
+                })
+        all_labels.extend(new_labels)
 
-    try:
-        headers['Content-Type'] = 'application/json'
-        response = session.patch(
-            f"{host}/api/tasks/{task_id}",
-            json={"labels": all_labels},
-            headers=headers,
-            timeout=30
-        )
+        try:
+            headers['Content-Type'] = 'application/json'
+            response = session.patch(
+                f"{host}/api/tasks/{task_id}",
+                json={"labels": all_labels},
+                headers=headers,
+                timeout=30
+            )
 
-        if response.status_code not in [200, 201]:
-            print(f"      [ERROR] Failed to create labels: {response.status_code} - {response.text[:200]}")
+            if response.status_code not in [200, 201]:
+                print(f"      [ERROR] Failed to create labels: {response.status_code} - {response.text[:200]}")
+                return existing_map
+        except Exception as e:
+            print(f"      [ERROR] Create labels: {e}")
             return existing_map
 
-        # 4. Re-fetch labels to get IDs for new labels
-        updated_labels = get_task_labels(host, session, task_id, org)
-        return {label['name']: label['id'] for label in updated_labels}
-
-    except Exception as e:
-        print(f"      [ERROR] Create labels: {e}")
-        return existing_map
+    # 5. Re-fetch labels to get IDs
+    updated_labels = get_task_labels(host, session, task_id, org)
+    return {label['name']: label['id'] for label in updated_labels}
 
 
 def insert_annotations(
