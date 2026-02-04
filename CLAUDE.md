@@ -94,6 +94,7 @@ API: `POST /api/tasks/create_multiview/`
 | Shape 클릭해도 선택 안됨 (resize handles 안 나타남) | `onCanvasShapeClicked`에서 `activateObject` dispatch + `useEffect`로 `canvasInstance.activate()` 호출 | `multiview-canvas-wrapper.tsx` |
 | 동영상 재생 시 프레임 떨림 (29→30→29 oscillation) | `top-bar.tsx`에서 Multiview workspace 예외 처리 + `playingRef` 동기 상태 + throttling | `multiview-workspace.tsx`, `top-bar.tsx` |
 | 슬라이더 이동 후 재생 시 첫 프레임으로 점프 | 위와 동일 (경쟁하는 프레임 소스 제거) | `top-bar.tsx` |
+| Multi-class 모드에서 Sound 라벨 안 지워짐 | CVAT PATCH API는 라벨 추가만 가능 → DELETE `/api/labels/{id}` 사용 | `insert_bbox_annotations.py` |
 
 ---
 
@@ -373,9 +374,83 @@ python scripts/init/insert_bbox_annotations.py \
 
 ## Last Updated
 
-2026-02-03 (Data Split 옵션 추가 - v11)
+2026-02-04 (Multi-class 라벨 제거 수정 - v12)
 
-### 최근 변경 사항 (2026-02-03) - v11
+### 최근 변경 사항 (2026-02-04) - v12
+
+**수정된 파일**:
+- `scripts/init/insert_bbox_annotations.py`
+- `scripts/init/create_mmoffice_tasks.py`
+- `scripts/init/create_multisensor_home_tasks.py`
+- `scripts/init/README.md`
+
+#### Multi-class 모드에서 불필요한 라벨 제거 수정
+
+**문제**: `--use-dataset-labels` 옵션 사용 시 기본 "Sound" 라벨이 제거되지 않고 남아있음
+
+**원인 분석**:
+- CVAT의 PATCH `/api/tasks/{id}` API는 라벨을 **추가만** 하고 기존 라벨을 **삭제하지 않음**
+- 코드에서 필요한 라벨만 포함한 배열을 PATCH로 보내도 기존 라벨이 유지됨
+
+**해결책**: DELETE API 사용
+
+```python
+# 기존 (작동 안 함)
+response = session.patch(
+    f"{host}/api/tasks/{task_id}",
+    json={"labels": all_labels},  # 필요한 라벨만 포함해도 기존 라벨 유지됨
+    ...
+)
+
+# 수정 (DELETE + PATCH)
+# 1. 불필요한 라벨 삭제
+for label_name in extra:
+    label_id = existing_map[label_name]
+    session.delete(f"{host}/api/labels/{label_id}", ...)
+
+# 2. 새 라벨 추가
+if missing:
+    session.patch(f"{host}/api/tasks/{task_id}", json={"labels": all_labels}, ...)
+```
+
+#### 중복 Task 스킵 기능 추가
+
+Task 생성 스크립트에 기존 task 존재 여부 확인 로직 추가:
+
+```python
+# create_mmoffice_tasks.py, create_multisensor_home_tasks.py
+check_resp = session.get(
+    f"{host}/api/tasks",
+    params={'search': task_name, 'page_size': 10},
+    headers=headers
+)
+if check_resp.status_code == 200:
+    existing = check_resp.json().get('results', [])
+    for t in existing:
+        if t.get('name') == task_name:
+            print(f"[SKIP] Task already exists: ID {t.get('id')}")
+            return {'id': t.get('id'), 'name': task_name, 'skipped': True}
+```
+
+#### Phase별 데이터 삽입 지원
+
+test와 train을 **별도 실행**하여 단계적으로 삽입 가능:
+
+```bash
+# Phase 1: test 데이터만 삽입
+./setup_ielab_production.sh --local --split test --multi-class all
+
+# Phase 2: train 데이터 추가 삽입 (기존 test task는 스킵)
+./setup_ielab_production.sh --local --split train --multi-class all
+```
+
+**테스트 결과**:
+- Task 8 (`multisensor_home1_01-03-Part2`): Labels = `['UseLaptop', 'Exit', 'Standup']` ✓
+- Task 11 (`multisensor_home1_01-05-Part1`): Labels = `['Sitdown', 'UseLaptop', 'AdjustAC', 'Standup']` ✓
+- Sound 라벨 없음 ✓
+- Pre-annotation이 없는 task는 기본 Sound 라벨 유지
+
+### 이전 변경 사항 (2026-02-03) - v11
 
 **수정된 파일**:
 - `scripts/init/insert_bbox_annotations.py`
