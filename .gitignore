@@ -10,4 +10,3 @@
 **/__pycache__/
 /.playwright-mcp/
 docker-compose.override.yml
-scripts/init/setup_ielab_production.sh
