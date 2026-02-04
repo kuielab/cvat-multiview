@@ -753,3 +753,29 @@ cd /home/ubuntu/cvat-multiview/scripts/init
 |------|------|----------|
 | 이진분류 (기본) | - | `Sound` |
 | 다중 클래스 | `--multi-class` | `Sitdown`, `Standup`, `ReadBook`, `class_1`~`class_12` |
+
+### Phase별 데이터 삽입
+
+test와 train을 **별도 실행**하여 단계적으로 삽입할 수 있습니다.
+기존 task가 있으면 자동으로 **스킵**되므로 중복 생성 걱정 없이 추가 삽입 가능합니다.
+
+```bash
+# Phase 1: test 데이터만 삽입
+./setup_ielab_production.sh --local --split test all
+
+# Phase 2: train 데이터 추가 삽입 (기존 test task는 스킵)
+./setup_ielab_production.sh --local --split train all
+```
+
+**Phase별 결과 예시:**
+
+| Phase | 명령어 | Tasks | Pre-annotation |
+|-------|--------|-------|----------------|
+| 1 | `--split test all` | 327 | 7,050 shapes |
+| 2 | `--split train all` | +720 | +3,835 shapes |
+| **합계** | - | **1,047** | **10,885 shapes** |
+
+**중복 Task 스킵 기능:**
+- `create_multisensor_home_tasks.py`와 `create_mmoffice_tasks.py`가 기존 task 존재 여부를 확인
+- 동일한 이름의 task가 있으면 `[SKIP] Task already exists: ID xxx` 메시지 출력 후 스킵
+- Phase 1의 pre-annotation이 Phase 2 실행 시에도 유지됨

@@ -267,6 +267,28 @@ def create_multiview_task(
     print(f"\n{'='*60}")
     print(f"Creating Task: {task_name}")
     print(f"{'='*60}")
+
+    # 기존 task 존재 확인
+    try:
+        headers = {}
+        csrf_token = session.cookies.get('csrftoken')
+        if csrf_token:
+            headers['X-CSRFToken'] = csrf_token
+
+        check_resp = session.get(
+            f"{host}/api/tasks",
+            params={'search': task_name, 'page_size': 10},
+            headers=headers
+        )
+        if check_resp.status_code == 200:
+            existing = check_resp.json().get('results', [])
+            for t in existing:
+                if t.get('name') == task_name:
+                    print(f"[SKIP] Task already exists: ID {t.get('id')}")
+                    return {'id': t.get('id'), 'name': task_name, 'skipped': True}
+    except Exception as e:
+        print(f"[WARN] Could not check existing tasks: {e}")
+
     print(f"Dataset: {video_set.dataset}")
     print(f"Subdir: {video_set.subdir}")
     print(f"Session ID: {video_set.session_id}")
