@@ -1016,22 +1016,28 @@ export function getJobAsync({
             // Load multiview data if job is multiview type
             let multiviewData = null;
             if (job.dimension === DimensionType.MULTIVIEW) {
-                // Fetch multiview metadata to get view_count
+                // Fetch multiview metadata to get view_count and video dimensions
                 let viewCount = 5; // default fallback
+                let apiResponse: any = null;
                 try {
                     const response = await cvat.server.request(`/api/tasks/${taskID}/multiview_data`);
-                    viewCount = response.data?.view_count || 5;
+                    apiResponse = response.data;
+                    viewCount = apiResponse?.view_count || 5;
                 } catch (e) {
                     // If endpoint fails, use default view count
                     console.warn('Could not fetch multiview_data, using default view count:', e);
                 }
 
-                // Construct video URLs dynamically based on view_count
-                const videos: Record<string, { url: string; fps: number }> = {};
+                // Construct video URLs and dimensions dynamically based on view_count
+                const videos: Record<string, { url: string; fps: number; width: number; height: number }> = {};
                 for (let i = 1; i <= viewCount; i++) {
+                    const viewKey = `video_view${i}`;
+                    const videoData = apiResponse?.[viewKey];
                     videos[`view${i}`] = {
                         url: `/api/tasks/${taskID}/multiview/video/${i}`,
                         fps: 30, // Will be updated from metadata if available
+                        width: videoData?.width || 0,
+                        height: videoData?.height || 0,
                     };
                 }
 
