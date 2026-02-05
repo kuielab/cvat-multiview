@@ -2969,7 +2969,27 @@ class PluginsSerializer(serializers.Serializer):
     MODELS = serializers.BooleanField()
     PREDICT = serializers.BooleanField()
 
+
+class VideoSerializer(serializers.ModelSerializer):
+    """Serializer for Video model with dimensions for multiview coordinate transformation."""
+    class Meta:
+        model = models.Video
+        fields = ['id', 'width', 'height']
+        read_only_fields = ['id', 'width', 'height']
+
+
 class MultiviewDataSerializer(serializers.ModelSerializer):
+    video_view1 = VideoSerializer(read_only=True)
+    video_view2 = VideoSerializer(read_only=True, allow_null=True)
+    video_view3 = VideoSerializer(read_only=True, allow_null=True)
+    video_view4 = VideoSerializer(read_only=True, allow_null=True)
+    video_view5 = VideoSerializer(read_only=True, allow_null=True)
+    video_view6 = VideoSerializer(read_only=True, allow_null=True)
+    video_view7 = VideoSerializer(read_only=True, allow_null=True)
+    video_view8 = VideoSerializer(read_only=True, allow_null=True)
+    video_view9 = VideoSerializer(read_only=True, allow_null=True)
+    video_view10 = VideoSerializer(read_only=True, allow_null=True)
+
     class Meta:
         model = models.MultiviewData
         fields = ['id', 'session_id', 'part_number', 'view_count', 'original_files',

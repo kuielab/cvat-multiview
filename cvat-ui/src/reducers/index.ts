@@ -937,13 +937,10 @@ export interface AnnotationState {
     workspace: Workspace;
     multiviewData: {
         videos: {
-            view1: { url: string; fps: number };
-            view2: { url: string; fps: number };
-            view3: { url: string; fps: number };
-            view4: { url: string; fps: number };
-            view5: { url: string; fps: number };
+            [key: string]: { url: string; fps: number; width: number; height: number };
         } | null;
         activeView: number | null;
+        viewCount: number | null;
     };
 }
 

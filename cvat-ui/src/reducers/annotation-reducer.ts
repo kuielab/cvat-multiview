@@ -163,6 +163,7 @@ const defaultState: AnnotationState = {
     multiviewData: {
         videos: null,
         activeView: null,
+        viewCount: null,
     },
 };
 

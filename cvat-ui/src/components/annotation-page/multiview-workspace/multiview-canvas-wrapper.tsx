@@ -166,6 +166,24 @@ function transformPointsForDisplay(
     return points.map((val, idx) => (idx % 2 === 1 ? transformYForDisplay(val, canvasHeight, taskHeight) : val));
 }
 
+/**
+ * Get video dimensions from Redux multiviewData metadata.
+ * This provides consistent dimensions across sessions, unlike videoElement which
+ * can have different dimensions depending on loading state or frame position.
+ */
+function getVideoDimensionsFromMetadata(
+    multiviewData: { videos: Record<string, { width: number; height: number }> | null } | null,
+    activeViewId: number,
+): { width: number; height: number } | null {
+    if (!multiviewData?.videos) return null;
+    const viewKey = `view${activeViewId}`;
+    const viewData = multiviewData.videos[viewKey];
+    if (viewData && viewData.width > 0 && viewData.height > 0) {
+        return { width: viewData.width, height: viewData.height };
+    }
+    return null;
+}
+
 export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null {
     const { canvasContainer, videoElement, activeViewId } = props;
     const dispatch = useDispatch();
@@ -190,6 +208,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const activatedStateID = useSelector((state: CombinedState) => state.annotation.annotations.activatedStateID);
     const activatedAttributeID = useSelector((state: CombinedState) => state.annotation.annotations.activatedAttributeID);
     const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
+    const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
     // Use refs for values that change frequently but shouldn't cause remount
     const stateRefs = useRef({
@@ -204,6 +223,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         workspace,
         activatedStateID,
         activeControl,
+        multiviewData,
     });
 
     // Update refs when values change
@@ -220,8 +240,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             workspace,
             activatedStateID,
             activeControl,
+            multiviewData,
         };
-    }, [activeLabelID, activeObjectType, frameNumber, activeViewId, jobInstance, annotations, curZLayer, frameData, workspace, activatedStateID, activeControl]);
+    }, [activeLabelID, activeObjectType, frameNumber, activeViewId, jobInstance, annotations, curZLayer, frameData, workspace, activatedStateID, activeControl, multiviewData]);
 
     // Refs for stable event handler references (to avoid useEffect dependency issues)
     const eventHandlersRef = useRef<{
@@ -774,8 +795,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // Initial setup with current frame data (only if not in draw mode or draw requested)
         if (stateRefs.current.frameData && !shouldPreserveDrawState(canvasInstance, stateRefs.current.activeControl)) {
             // Check if aspect ratio transformation is needed
-            const videoWidth = videoElement?.videoWidth || 0;
-            const videoHeight = videoElement?.videoHeight || 0;
+            // Priority: 1) Backend metadata (consistent across sessions), 2) videoElement (fallback)
+            const metadataDims = getVideoDimensionsFromMetadata(stateRefs.current.multiviewData, stateRefs.current.activeViewId);
+            const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
+            const videoHeight = metadataDims?.height || videoElement?.videoHeight || 0;
             const transformResult = createVideoProportionalFrameData(
                 stateRefs.current.frameData,
                 videoWidth,
@@ -897,8 +920,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const viewChanged = prevSetupViewIdRef.current !== null && prevSetupViewIdRef.current !== activeViewId;
 
         // Check if aspect ratio transformation is needed
-        const videoWidth = videoElement?.videoWidth || 0;
-        const videoHeight = videoElement?.videoHeight || 0;
+        // Priority: 1) Backend metadata (consistent across sessions), 2) videoElement (fallback)
+        const metadataDims = getVideoDimensionsFromMetadata(multiviewData, activeViewId);
+        const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
+        const videoHeight = metadataDims?.height || videoElement?.videoHeight || 0;
         const transformResult = createVideoProportionalFrameData(frameData, videoWidth, videoHeight);
 
         // Store transform params for coordinate transformation on annotation save
@@ -967,7 +992,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
         // Always update prevSetupViewIdRef after processing
         prevSetupViewIdRef.current = activeViewId;
-    }, [canvasInstance, canvasContainer, frameData, videoElement, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl]);
+    }, [canvasInstance, canvasContainer, frameData, videoElement, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl, multiviewData]);
 
     /**
      * Update canvas viewId when active view changes
