@@ -1204,7 +1204,12 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
                 const dx2 = (startCenter.x - cx) ** 2;
                 const dy2 = (startCenter.y - cy) ** 2;
-                if (Math.sqrt(dx2 + dy2) > 0) {
+                // Minimum drag distance threshold to prevent accidental micro-drags
+                // when clicking to select shapes. A 1-2px mouse movement during click
+                // gets amplified by getScreenCTM().inverse() scale factor, causing
+                // unintended coordinate shifts.
+                const MIN_DRAG_THRESHOLD = 5;
+                if (Math.sqrt(dx2 + dy2) > MIN_DRAG_THRESHOLD) {
                     if (state.shapeType === 'mask') {
                         const { points } = state;
                         const x = Math.trunc(shape.x()) - this.geometry.offset;
