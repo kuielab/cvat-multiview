@@ -167,6 +167,92 @@ function transformPointsForDisplay(
 }
 
 /**
+ * Clamp annotation points to canvas bounds, preserving shape size when possible.
+ * For drag operations (shape moved out of bounds), translates the entire shape
+ * back within bounds so it "slides" along the wall without shrinking.
+ * For resize operations (shape enlarged past boundary), per-point clamping applies.
+ *
+ * This prevents the backend fitPoints() from clamping in task space, which
+ * causes shapes to shrink when aspect ratio differs between video and task.
+ */
+function clampPointsToCanvasBounds(
+    points: number[],
+    canvasWidth: number,
+    canvasHeight: number,
+): number[] {
+    if (points.length < 4) return points;
+
+    // Compute bounding box
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < points.length; i += 2) {
+        xs.push(points[i]);
+        ys.push(points[i + 1]);
+    }
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    // Compute translation needed to push shape back within bounds
+    // This preserves shape dimensions for drag operations
+    let dx = 0;
+    let dy = 0;
+    if (maxX > canvasWidth) dx = canvasWidth - maxX; // shift left
+    if (minX + dx < 0) dx = -minX; // shift right (wins if shape fits)
+    if (maxY > canvasHeight) dy = canvasHeight - maxY; // shift up
+    if (minY + dy < 0) dy = -minY; // shift down
+
+    // Apply translation
+    const shifted = points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
+
+    // Final per-point clamp for safety (handles shapes larger than canvas)
+    return shifted.map((v, i) => {
+        if (i % 2 === 0) return Math.max(0, Math.min(v, canvasWidth));
+        return Math.max(0, Math.min(v, canvasHeight));
+    });
+}
+
+/**
+ * Create a display-safe clone of an ObjectState with overridden points.
+ *
+ * ObjectState uses Object.defineProperties with non-enumerable accessor descriptors,
+ * which means the spread operator `{ ...objectState }` copies ZERO properties.
+ * This function explicitly reads all properties needed by canvasView.ts setupObjects()
+ * and creates a plain object that the canvas can correctly diff, render, and track.
+ */
+function cloneObjectStateForDisplay(ann: any, newPoints: number[]): any {
+    return {
+        clientID: ann.clientID,
+        serverID: ann.serverID,
+        parentID: ann.parentID,
+        objectType: ann.objectType,
+        shapeType: ann.shapeType,
+        frame: ann.frame,
+        updated: ann.updated,
+        source: ann.source,
+        isGroundTruth: ann.isGroundTruth,
+        label: ann.label,
+        color: ann.color,
+        hidden: ann.hidden,
+        pinned: ann.pinned,
+        lock: ann.lock,
+        outside: ann.outside,
+        occluded: ann.occluded,
+        zOrder: ann.zOrder,
+        rotation: ann.rotation,
+        attributes: ann.attributes,
+        descriptions: ann.descriptions,
+        group: ann.group,
+        elements: ann.elements,
+        keyframe: ann.keyframe,
+        keyframes: ann.keyframes,
+        viewId: ann.viewId,
+        points: newPoints,
+    };
+}
+
+/**
  * Get video dimensions from Redux multiviewData metadata.
  * This provides consistent dimensions across sessions, unlike videoElement which
  * can have different dimensions depending on loading state or frame position.
@@ -193,7 +279,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     // Track coordinate transformation parameters for aspect ratio correction
     // When video aspect ratio differs from task metadata, we need to transform coordinates
-    const transformParamsRef = useRef<{ canvasHeight: number; taskHeight: number } | null>(null);
+    // taskWidth is included for boundary clamping (X doesn't scale but needs a bound)
+    const transformParamsRef = useRef<{ canvasHeight: number; taskHeight: number; taskWidth: number } | null>(null);
 
     // Redux state selectors
     const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
@@ -325,6 +412,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // This ensures annotations are stored in the original video coordinate system
         const transformParams = transformParamsRef.current;
         if (transformParams && state.points && Array.isArray(state.points)) {
+            // Pre-clamp in canvas space to prevent shrinkage from aspect ratio mismatch
+            state.points = clampPointsToCanvasBounds(
+                state.points,
+                transformParams.taskWidth,
+                transformParams.canvasHeight,
+            );
             state.points = transformPointsForStorage(
                 state.points,
                 transformParams.canvasHeight,
@@ -554,8 +647,19 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const transformParams = transformParamsRef.current;
         let updatedPoints = points;
         if (transformParams && points && Array.isArray(points)) {
+            // Pre-clamp in canvas space before converting to task space.
+            // This prevents the backend fitPoints() from shrinking shapes that
+            // extend beyond the canvas boundary due to aspect ratio mismatch.
+            // Skip clamping for rotated shapes (fitPoints also skips them).
+            if (!rotation) {
+                updatedPoints = clampPointsToCanvasBounds(
+                    updatedPoints,
+                    transformParams.taskWidth,
+                    transformParams.canvasHeight,
+                );
+            }
             updatedPoints = transformPointsForStorage(
-                points,
+                updatedPoints,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
             );
@@ -795,10 +899,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // Initial setup with current frame data (only if not in draw mode or draw requested)
         if (stateRefs.current.frameData && !shouldPreserveDrawState(canvasInstance, stateRefs.current.activeControl)) {
             // Check if aspect ratio transformation is needed
-            // Priority: 1) Backend metadata (consistent across sessions), 2) videoElement (fallback)
+            // Priority: 1) videoElement (actual decoded video dimensions), 2) Backend metadata (fallback)
+            // videoElement gives TRUE dimensions of the video file (e.g., 320x240),
+            // while metadata may store task dimensions (e.g., 1920x1080) which can be wrong.
             const metadataDims = getVideoDimensionsFromMetadata(stateRefs.current.multiviewData, stateRefs.current.activeViewId);
-            const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
-            const videoHeight = metadataDims?.height || videoElement?.videoHeight || 0;
+            const videoWidth = videoElement?.videoWidth || metadataDims?.width || 0;
+            const videoHeight = videoElement?.videoHeight || metadataDims?.height || 0;
             const transformResult = createVideoProportionalFrameData(
                 stateRefs.current.frameData,
                 videoWidth,
@@ -810,6 +916,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 transformParamsRef.current = {
                     canvasHeight: transformResult.canvasHeight,
                     taskHeight: transformResult.taskHeight,
+                    taskWidth: stateRefs.current.frameData.width,
                 };
             } else {
                 transformParamsRef.current = null;
@@ -841,8 +948,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                             transformResult.canvasHeight,
                             transformResult.taskHeight,
                         );
-                        // Create a shallow copy with transformed points
-                        return { ...ann, points: transformedPoints };
+                        // Use explicit property clone instead of spread operator.
+                        // ObjectState uses non-enumerable defineProperties, so { ...ann }
+                        // copies ZERO properties and breaks canvas setupObjects() diffing.
+                        return cloneObjectStateForDisplay(ann, transformedPoints);
                     }
                     return ann;
                 });
@@ -920,10 +1029,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const viewChanged = prevSetupViewIdRef.current !== null && prevSetupViewIdRef.current !== activeViewId;
 
         // Check if aspect ratio transformation is needed
-        // Priority: 1) Backend metadata (consistent across sessions), 2) videoElement (fallback)
+        // Priority: 1) videoElement (actual decoded video dimensions), 2) Backend metadata (fallback)
+        // videoElement gives TRUE dimensions of the video file (e.g., 320x240),
+        // while metadata may store task dimensions (e.g., 1920x1080) which can be wrong.
         const metadataDims = getVideoDimensionsFromMetadata(multiviewData, activeViewId);
-        const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
-        const videoHeight = metadataDims?.height || videoElement?.videoHeight || 0;
+        const videoWidth = videoElement?.videoWidth || metadataDims?.width || 0;
+        const videoHeight = videoElement?.videoHeight || metadataDims?.height || 0;
         const transformResult = createVideoProportionalFrameData(frameData, videoWidth, videoHeight);
 
         // Store transform params for coordinate transformation on annotation save
@@ -931,6 +1042,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             transformParamsRef.current = {
                 canvasHeight: transformResult.canvasHeight,
                 taskHeight: transformResult.taskHeight,
+                taskWidth: frameData.width,
             };
         } else {
             transformParamsRef.current = null;
@@ -963,8 +1075,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                         transformResult.canvasHeight,
                         transformResult.taskHeight,
                     );
-                    // Create a shallow copy with transformed points
-                    return { ...ann, points: transformedPoints };
+                    // Use explicit property clone instead of spread operator.
+                    // ObjectState uses non-enumerable defineProperties, so { ...ann }
+                    // copies ZERO properties and breaks canvas setupObjects() diffing.
+                    return cloneObjectStateForDisplay(ann, transformedPoints);
                 }
                 return ann;
             });

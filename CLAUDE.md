@@ -95,6 +95,8 @@ API: `POST /api/tasks/create_multiview/`
 | 동영상 재생 시 프레임 떨림 (29→30→29 oscillation) | `top-bar.tsx`에서 Multiview workspace 예외 처리 + `playingRef` 동기 상태 + throttling | `multiview-workspace.tsx`, `top-bar.tsx` |
 | 슬라이더 이동 후 재생 시 첫 프레임으로 점프 | 위와 동일 (경쟁하는 프레임 소스 제거) | `top-bar.tsx` |
 | Multi-class 모드에서 Sound 라벨 안 지워짐 | CVAT PATCH API는 라벨 추가만 가능 → DELETE `/api/labels/{id}` 사용 | `insert_bbox_annotations.py` |
+| Pre-annotation 편집 시 다른 annotation 위치 변경됨 | `cloneObjectStateForDisplay()` 헬퍼로 ObjectState의 non-enumerable 속성 명시적 복사 | `multiview-canvas-wrapper.tsx` |
+| Shape을 뷰 상단/하단으로 드래그하면 축소됨 | videoElement 실제 치수 우선 사용 + `clampPointsToCanvasBounds()` 추가 | `multiview-canvas-wrapper.tsx` |
 
 ---
 
@@ -374,9 +376,143 @@ python scripts/init/insert_bbox_annotations.py \
 
 ## Last Updated
 
-2026-02-04 (Multi-class 라벨 제거 수정 - v12)
+2026-02-08 (Shape 뷰 경계 드래그 시 축소 버그 수정 - v14)
 
-### 최근 변경 사항 (2026-02-04) - v12
+### 최근 변경 사항 (2026-02-08) - v14
+
+**수정된 파일**:
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
+
+#### Shape을 뷰 상단/하단으로 드래그하면 축소되는 버그 수정
+
+**문제**: Multiview workspace에서 rectangle shape을 뷰의 상단이나 하단 경계로 드래그하면, shape이 경계까지 도달하지 못하고 크기가 작아짐
+
+**근본 원인 (2가지)**:
+
+1. **비디오 치수 우선순위 오류**: 코드가 백엔드 메타데이터(1920x1080)를 실제 `videoElement` 치수(320x240)보다 우선 사용. 이로 인해 `transformParamsRef.current`가 `null`이 되어 좌표 변환이 전혀 수행되지 않음
+2. **경계 클램핑 함수 부재**: 좌표 변환이 올바르게 동작해도, 경계를 초과하는 shape이 백엔드 `fitPoints()`에 의해 비례적으로 축소됨
+
+**해결책**:
+
+1. **비디오 치수 우선순위 수정** (2곳):
+```typescript
+// 이전 (잘못됨): 메타데이터 우선
+const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
+
+// 수정 후: videoElement 실제 치수 우선
+const videoWidth = videoElement?.videoWidth || metadataDims?.width || 0;
+const videoHeight = videoElement?.videoHeight || metadataDims?.height || 0;
+```
+
+2. **`clampPointsToCanvasBounds()` 함수 추가**:
+```typescript
+function clampPointsToCanvasBounds(
+    points: number[], canvasWidth: number, canvasHeight: number,
+): number[] {
+    // 1. Bounding box 계산
+    // 2. Shape 전체를 경계 안으로 이동 (크기 유지)
+    // 3. 안전망으로 개별 포인트 클램핑
+}
+```
+
+3. **`onCanvasEditDone`과 `onCanvasShapeDrawn`에서 클램핑 적용**: 회전되지 않은 shape에 대해 저장 전 캔버스 공간에서 클램핑 수행
+
+**좌표 시스템 설명**:
+- Canvas 공간: 1920 × 1440 (비디오 4:3 비율에 맞춤)
+- Task 공간: 1920 × 1080 (백엔드 저장)
+- Y 스케일: canvas→task = 0.75 (1080/1440)
+
+**검증 결과**:
+- 하단 경계 드래그: Shape 100x100 크기 유지, Y=1080에 클램핑 ✓
+- 상단 경계 드래그: Shape 100x100 크기 유지, Y=0에 클램핑 ✓
+- API 검증: 모든 좌표 [0,1920]×[0,1080] 범위 내 ✓
+- Pre-annotation 편집 버그 회귀 없음 ✓
+
+### 이전 변경 사항 (2026-02-08) - v13
+
+**수정된 파일**:
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
+
+**추가된 파일** (테스트):
+- `scripts/test/setup_test_task.py` - 테스트 Task 생성 (합성 비디오 + Pre-annotation)
+- `scripts/test/test_preannotation_edit.py` - 53개 테스트 케이스 자동 실행
+
+#### Pre-annotation 편집 시 다른 annotation 위치 변경 버그 수정
+
+**문제**: Pre-annotation을 10개 한 다음 7번째 프레임에 있는 annotation을 이동시키거나 크기를 변형하면 다른 annotation도 위치가 바뀌거나 영향을 받음
+
+**근본 원인**:
+- `ObjectState` 클래스는 `Object.defineProperties`로 모든 속성을 **non-enumerable accessor descriptor**로 정의
+- 기존 코드에서 aspect ratio 변환 시 spread operator `{ ...ann, points: transformedPoints }`를 사용
+- Spread operator는 non-enumerable 속성을 **복사하지 않음** → `clientID: undefined`, `updated: undefined` 등
+- Canvas의 `setupObjects()`가 `clientID`와 `updated`로 diffing → undefined 값으로 인해 모든 shape을 새 객체로 인식
+- 매 `setup()` 호출마다 모든 shape 삭제 후 재생성 → annotation 상태 손상
+
+**해결책**: `cloneObjectStateForDisplay()` 헬퍼 함수 추가
+
+```typescript
+function cloneObjectStateForDisplay(ann: any, newPoints: number[]): any {
+    return {
+        clientID: ann.clientID,
+        serverID: ann.serverID,
+        parentID: ann.parentID,
+        objectType: ann.objectType,
+        shapeType: ann.shapeType,
+        frame: ann.frame,
+        updated: ann.updated,
+        source: ann.source,
+        isGroundTruth: ann.isGroundTruth,
+        label: ann.label,
+        color: ann.color,
+        hidden: ann.hidden,
+        pinned: ann.pinned,
+        lock: ann.lock,
+        outside: ann.outside,
+        occluded: ann.occluded,
+        zOrder: ann.zOrder,
+        rotation: ann.rotation,
+        attributes: ann.attributes,
+        descriptions: ann.descriptions,
+        group: ann.group,
+        elements: ann.elements,
+        keyframe: ann.keyframe,
+        keyframes: ann.keyframes,
+        viewId: ann.viewId,
+        points: newPoints,
+    };
+}
+```
+
+2곳의 `{ ...ann, points: transformedPoints }` 를 `cloneObjectStateForDisplay(ann, transformedPoints)` 로 교체:
+1. 초기 마운트 setup effect (~line 887)
+2. 프레임/어노테이션 변경 effect (~line 1005)
+
+**테스트 결과** (53개 케이스 전체 통과):
+
+| 카테고리 | 테스트 수 | 내용 |
+|----------|----------|------|
+| TC01: 방향별 이동 | 12 | 8방향 + 크기별 이동 (tiny/small/large) |
+| TC02: 프레임별 이동 | 8 | 8개 다른 프레임에서 shape 이동 |
+| TC03: 뷰별 이동 | 5 | 5개 다른 뷰에서 shape 이동 |
+| TC04: 크기 변경 | 6 | 확대/축소/비대칭 리사이즈 |
+| TC05: 같은 프레임 (밀집) | 5 | 5개 shape이 있는 프레임에서 개별 이동 |
+| TC06: 고밀도 클러스터 | 5 | 10개 shape 밀집 영역에서 개별 이동 |
+| TC07: 속성 변경 | 4 | occluded/z_order/rotation/복합 변경 |
+| TC08: 연속 편집 | 3 | 3-5개 shape 순차 편집 |
+| TC09: 경계 이동 | 3 | 원점/큰 좌표 이동 |
+| TC10: 크로스뷰 편집 | 2 | 다른 뷰 shape 교차 편집 |
+| **합계** | **53** | **전체 통과** |
+
+**테스트 스크립트 사용법**:
+```bash
+# 1. 테스트 Task 생성 (합성 비디오 5개 + Pre-annotation 48개)
+python scripts/test/setup_test_task.py --user admin --password admin123
+
+# 2. 53개 테스트 케이스 실행
+python scripts/test/test_preannotation_edit.py --user admin --password admin123
+```
+
+### 이전 변경 사항 (2026-02-04) - v12
 
 **수정된 파일**:
 - `scripts/init/insert_bbox_annotations.py`
