@@ -26,6 +26,18 @@ const PLAYBACK_RATE_OPTIONS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 const SYNC_THRESHOLD = 0.1; // Max allowed time difference in seconds
 const SYNC_INTERVAL = 500; // How often to check sync in ms
 
+// Zoom constants
+const MIN_ZOOM = 1.0; // Cannot zoom out beyond default (fit-to-view)
+const MAX_ZOOM = 5.0; // Maximum 5x zoom
+const ZOOM_FACTOR_IN = 1.12; // Scroll up multiplier
+const ZOOM_FACTOR_OUT = 1 / 1.12; // Scroll down multiplier
+
+export interface ZoomState {
+    level: number;
+    translateX: number;
+    translateY: number;
+}
+
 // ActiveControl values that indicate a draw operation is requested/in progress
 const DRAW_ACTIVE_CONTROLS = [
     ActiveControl.DRAW_RECTANGLE,
@@ -46,6 +58,7 @@ export default function MultiviewWorkspace(): JSX.Element {
     const [canvasContainer, setCanvasContainer] = useState<HTMLDivElement | null>(null);
     const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
     const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+    const [zoomState, setZoomState] = useState<ZoomState>({ level: 1.0, translateX: 0, translateY: 0 });
     const lastFrameRef = useRef<number>(-1);
     const videoRefsMap = useRef<Map<number, HTMLVideoElement>>(new Map());
     const syncIntervalRef = useRef<number | null>(null);
@@ -334,6 +347,59 @@ export default function MultiviewWorkspace(): JSX.Element {
         setAudioEngine(engine);
     };
 
+    // Reset zoom when active view changes
+    useEffect(() => {
+        setZoomState({ level: 1.0, translateX: 0, translateY: 0 });
+    }, [activeView]);
+
+    // Handle zoom from mouse wheel on canvas overlay
+    // Uses pointer-centered zoom: the point under the mouse stays fixed during zoom
+    const handleZoom = useCallback((deltaY: number, clientX: number, clientY: number): void => {
+        if (!videoElement) return;
+        const container = videoElement.closest('.video-canvas-container');
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+
+        // Mouse position relative to the container (unscaled layout coordinates)
+        const mx = clientX - rect.left;
+        const my = clientY - rect.top;
+
+        setZoomState((prev) => {
+            // Multiplicative factor for smooth zoom
+            const factor = deltaY < 0 ? ZOOM_FACTOR_IN : ZOOM_FACTOR_OUT;
+            const newLevel = Math.min(Math.max(prev.level * factor, MIN_ZOOM), MAX_ZOOM);
+
+            // When zoom resets to 1.0, reset translation
+            if (newLevel <= MIN_ZOOM) {
+                return { level: MIN_ZOOM, translateX: 0, translateY: 0 };
+            }
+
+            // Point under mouse in content (untransformed) coordinates:
+            //   contentX = (mx - prevTranslateX) / prevLevel
+            // After zoom, keep this point at the same screen position:
+            //   newTranslateX = mx - contentX * newLevel
+            const contentX = (mx - prev.translateX) / prev.level;
+            const contentY = (my - prev.translateY) / prev.level;
+            const newTranslateX = mx - contentX * newLevel;
+            const newTranslateY = my - contentY * newLevel;
+
+            return { level: newLevel, translateX: newTranslateX, translateY: newTranslateY };
+        });
+    }, [videoElement]);
+
+    // Handle pan (drag to move when zoomed)
+    const handlePan = useCallback((dx: number, dy: number): void => {
+        setZoomState((prev) => {
+            if (prev.level <= MIN_ZOOM) return prev;
+            return { ...prev, translateX: prev.translateX + dx, translateY: prev.translateY + dy };
+        });
+    }, []);
+
+    // Reset zoom to default
+    const handleZoomReset = useCallback((): void => {
+        setZoomState({ level: 1.0, translateX: 0, translateY: 0 });
+    }, []);
+
     // Handle canvas container ready callback from active view
     const handleCanvasContainerReady = useCallback((
         container: HTMLDivElement | null,
@@ -368,6 +434,9 @@ export default function MultiviewWorkspace(): JSX.Element {
                     playbackRate={playbackRate}
                     onCanvasContainerReady={handleCanvasContainerReady}
                     onVideoRef={handleVideoRef}
+                    zoomState={zoomState}
+                    onPan={handlePan}
+                    onZoomReset={handleZoomReset}
                 />
                 <SpectrogramPanel
                     audioEngine={audioEngine}
@@ -383,6 +452,7 @@ export default function MultiviewWorkspace(): JSX.Element {
                 canvasContainer={canvasContainer}
                 videoElement={videoElement}
                 activeViewId={activeView}
+                onZoom={handleZoom}
             />
         </Layout>
     );

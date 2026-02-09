@@ -11,6 +11,7 @@ CVAT(Computer Vision Annotation Tool)에 **1-10개 카메라 동기화 라벨링
 - 스펙트로그램 클릭으로 프레임 네비게이션
 - 재생 속도 조절 (0.25x ~ 2x)
 - Draw 모드 진입 시 비디오 자동 일시정지
+- 뷰별 마우스 스크롤 줌 인/아웃 (1x~5x, bbox 정렬 유지)
 
 ---
 
@@ -378,9 +379,81 @@ python scripts/init/insert_bbox_annotations.py \
 
 ## Last Updated
 
-2026-02-09 (반복 리사이즈 시 Shape 사라지는 버그 수정 - v16)
+2026-02-09 (뷰별 마우스 스크롤 줌 인/아웃 기능 추가 - v17)
 
-### 최근 변경 사항 (2026-02-09) - v16
+### 최근 변경 사항 (2026-02-09) - v17
+
+**수정된 파일**:
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-workspace.tsx`
+- `cvat-ui/src/components/annotation-page/multiview-workspace/video-canvas.tsx`
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-video-grid.tsx`
+- `cvat-ui/src/components/annotation-page/multiview-workspace/styles.scss`
+
+#### 뷰별 마우스 스크롤 줌 인/아웃 기능 추가
+
+**목적**: 작업자가 작은 이미지에 대해 bbox를 그리기 힘들어서 넣는 기능. 각 뷰를 확대하여 정밀한 bbox 라벨링 가능.
+
+**구현 방식**: CSS `transform: scale()` 기반 줌
+
+- `zoom-wrapper` div가 video와 canvas overlay를 감싸고, CSS transform으로 동시에 확대/축소
+- 비디오 이미지와 bbox(SVG)가 동일 wrapper 안에 있어 좌표 정렬이 항상 유지됨
+- SVG shape 좌표는 줌 전/후 완전히 동일 (CSS 변환만 적용)
+
+**기능 상세**:
+
+| 기능 | 조작 | 설명 |
+|------|------|------|
+| 줌 인 | 마우스 스크롤 ↑ | 활성 뷰만 확대 (최대 5.0x = 500%) |
+| 줌 아웃 | 마우스 스크롤 ↓ | 기본 상태(1.0x = 100%) 이하로는 불가 |
+| 팬 (이동) | Alt + 좌클릭 드래그 / 가운데 버튼 드래그 | 확대 상태에서 뷰 이동 |
+| 리셋 | 더블 클릭 | 줌을 1.0x로 초기화 |
+| 줌 인디케이터 | 자동 표시 | 확대 시 우측 상단에 퍼센트 표시 (예: 176%) |
+
+**줌 상수**:
+```typescript
+const MIN_ZOOM = 1.0;   // 기본 상태 (축소 불가)
+const MAX_ZOOM = 5.0;   // 최대 확대 (500%)
+const ZOOM_FACTOR_IN = 1.12;   // 스크롤 당 12% 확대
+const ZOOM_FACTOR_OUT = 1 / 1.12;  // 스크롤 당 ~11% 축소
+```
+
+**핵심 코드 구조**:
+```typescript
+// ZoomState 타입 (multiview-workspace.tsx)
+export interface ZoomState {
+    level: number;      // 1.0 = 기본, 최대 5.0
+    translateX: number; // 팬 X 오프셋
+    translateY: number; // 팬 Y 오프셋
+}
+
+// CSS transform (video-canvas.tsx zoom-wrapper)
+transform: zoomLevel > 1.0
+    ? `translate(${translateX}px, ${translateY}px) scale(${zoomLevel})`
+    : 'none';
+```
+
+**데이터 흐름**:
+1. `multiview-canvas-wrapper.tsx`: wheel 이벤트 캡처 → `onZoom(deltaY, mouseX, mouseY)` 호출
+2. `multiview-workspace.tsx`: `handleZoom` 콜백에서 줌 레벨 계산 + 마우스 위치 기준 translate 조정
+3. `multiview-video-grid.tsx`: 활성 뷰에만 zoomState, onPan, onZoomReset props 전달
+4. `video-canvas.tsx`: zoom-wrapper에 CSS transform 적용, 팬/더블클릭 이벤트 처리
+
+**제약 사항**:
+- 비활성 뷰에서 스크롤해도 줌이 적용되지 않음 (활성 뷰만)
+- 뷰 전환 시 줌 상태가 초기화됨
+- overflow:hidden으로 확대된 콘텐츠가 셀 경계를 넘지 않음
+
+**E2E 테스트 결과** (Playwright):
+- 줌 인 5회 스크롤 → 176% 표시, CSS matrix 정상 ✓
+- 최대 줌: 500%에서 멈춤 (5.0x 초과 불가) ✓
+- 최소 줌: 100% 이하로 축소 불가, transform='none' ✓
+- Bbox 좌표 5개 shape 모두 줌 전/후 동일 ✓
+- Alt+드래그 팬: translate 값 (+50, +30) 정확 변경 ✓
+- 더블 클릭 리셋: transform='none', 인디케이터 0개 ✓
+- 비활성 뷰 스크롤: 줌 미적용, 모든 뷰 transform='none' ✓
+
+### 이전 변경 사항 (2026-02-09) - v16
 
 **수정된 파일**:
 - `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`

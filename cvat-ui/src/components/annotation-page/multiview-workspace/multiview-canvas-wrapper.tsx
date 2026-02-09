@@ -78,6 +78,7 @@ interface Props {
     canvasContainer: HTMLDivElement | null;
     videoElement: HTMLVideoElement | null;
     activeViewId: number;
+    onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
 }
 
 /**
@@ -429,7 +430,7 @@ function getVideoDimensionsFromMetadata(
 }
 
 export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null {
-    const { canvasContainer, videoElement, activeViewId } = props;
+    const { canvasContainer, videoElement, activeViewId, onZoom } = props;
     const dispatch = useDispatch();
     const mountedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -747,13 +748,19 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [canvasInstance, dispatch]);
 
     /**
-     * Handle wheel event on canvas - prevent canvas zoom
-     * Mouse wheel should NOT zoom the canvas in Multiview workspace
+     * Handle wheel event on canvas overlay.
+     * Block the canvas's internal SVG zoom (which would only zoom the canvas
+     * without zooming the video) and relay the event to the parent's CSS zoom
+     * handler that scales the entire video+canvas container together.
      */
     const handleWheel = useCallback((e: WheelEvent): void => {
         e.preventDefault();
         e.stopPropagation();
-    }, []);
+        // Relay to parent for CSS-based zoom of video + canvas container
+        if (onZoom) {
+            onZoom(e.deltaY, e.clientX, e.clientY);
+        }
+    }, [onZoom]);
 
     /**
      * Handle mousedown in bubble phase - this is now a no-op as canvasView.ts
