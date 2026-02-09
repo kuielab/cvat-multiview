@@ -148,11 +148,13 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const prevViewIdRef = useRef<number | null>(null);
     const setupCompletedRef = useRef(false);
     // Track whether viewport has been locked after initial setup.
-    // When locked, ResizeObserver must NOT call fitCanvas() because it changes
-    // canvasSize/imageOffset, causing bbox positions to shift on page refresh.
+    // When locked, ResizeObserver only re-fits if the container size actually
+    // changed (e.g., spectrogram panel load, sidebar toggle). This prevents
+    // redundant fitCanvas calls while still handling legitimate layout shifts
+    // that would otherwise leave canvasSize stale and cause bbox misalignment.
     const viewportLockedRef = useRef(false);
 
-    // Ref for current CSS zoom level ??used in ResizeObserver and setup effect
+    // Ref for current CSS zoom level - used in ResizeObserver and setup effect
     // to guard fit() calls. When zoomed, fit() would reset the SVG viewport
     // causing shapes to visually jump while the CSS transform stays unchanged.
     const zoomLevelRef = useRef(zoomLevel);
@@ -694,6 +696,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
+        setupCompletedRef.current = false;
+
         // Clear container first
         while (canvasContainer.firstChild) {
             canvasContainer.removeChild(canvasContainer.firstChild);
@@ -755,13 +759,36 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 if (!setupCompletedRef.current) {
                     return;
                 }
-                if (viewportLockedRef.current) {
+
+                const containerWidth = canvasContainer.clientWidth;
+                const containerHeight = canvasContainer.clientHeight;
+
+                // Skip if container has zero dimensions (e.g., tab switch)
+                if (containerWidth <= 0 || containerHeight <= 0) {
                     return;
                 }
-                canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
+
+                // When viewport is already locked, only re-fit if the container
+                // size actually changed. This handles the case where the layout
+                // shifts after initial setup (e.g., spectrogram panel loads,
+                // sidebar renders) which would otherwise leave canvasSize stale,
+                // causing bbox position misalignment on subsequent fit() calls.
+                const currentGeometry = canvasInstance.geometry;
+                if (!currentGeometry || currentGeometry.image.width <= 0 || currentGeometry.image.height <= 0) {
+                    return;
+                }
+
+                if (viewportLockedRef.current) {
+                    if (currentGeometry.canvas.width === containerWidth &&
+                        currentGeometry.canvas.height === containerHeight) {
+                        return;
+                    }
+                }
+
+                canvasInstance.fitCanvas(containerWidth, containerHeight);
 
                 // Keep SVG viewport in sync with new canvas dimensions.
-                // Only call fit() when NOT zoomed ??if zoomed, the existing viewport
+                // Only call fit() when NOT zoomed - if zoomed, the existing viewport
                 // is correct and fit() would reset it, causing a visual shape jump.
                 if (zoomLevelRef.current <= 1.0) {
                     canvasInstance.fit();
@@ -801,6 +828,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             mountedRef.current = false;
             // Reset viewport lock so the next mount/setup cycle can call fitCanvas
             viewportLockedRef.current = false;
+            setupCompletedRef.current = false;
         };
     }, [canvasContainer, canvasInstance]); // Remove activeViewId - viewId changes are handled by separate effects
 
