@@ -81,7 +81,7 @@ export function useStableVideoDims(params: {
     }, [activeViewId, videoElement, resetStableVideoDims]);
 
     useEffect(() => {
-        if (!videoElement) return;
+        if (!videoElement) return undefined;
 
         const handleVideoDimsChange = (): void => {
             setVersion((v) => v + 1);
@@ -91,12 +91,39 @@ export function useStableVideoDims(params: {
         videoElement.addEventListener('loadeddata', handleVideoDimsChange);
         videoElement.addEventListener('resize', handleVideoDimsChange);
 
+        // Schedule periodic version bumps so the setup effect re-runs
+        // until stableCount reaches samplesRequired. Without this, the
+        // effect may stall when video events stop firing before enough
+        // samples are collected (e.g., only 2 events for samplesRequired=3).
+        const POLL_INTERVAL_MS = 150;
+        const pollId = setInterval(() => {
+            const ref = stableVideoDimsRef.current;
+            if (ref.source === 'video' && ref.width > 0) {
+                // Already stable — stop polling
+                clearInterval(pollId);
+                return;
+            }
+            if (videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+                videoElement.videoWidth > 0) {
+                setVersion((v) => v + 1);
+            }
+        }, POLL_INTERVAL_MS);
+
+        // Hard stop: never poll longer than maxWaitMs + generous buffer
+        const stopId = setTimeout(() => {
+            clearInterval(pollId);
+            // One final bump so timeout-fallback path runs
+            setVersion((v) => v + 1);
+        }, maxWaitMs + 500);
+
         return () => {
             videoElement.removeEventListener('loadedmetadata', handleVideoDimsChange);
             videoElement.removeEventListener('loadeddata', handleVideoDimsChange);
             videoElement.removeEventListener('resize', handleVideoDimsChange);
+            clearInterval(pollId);
+            clearTimeout(stopId);
         };
-    }, [videoElement]);
+    }, [videoElement, maxWaitMs]);
 
     const getStableVideoDims = useCallback((): { width: number; height: number } | null => {
         const ref = stableVideoDimsRef.current;

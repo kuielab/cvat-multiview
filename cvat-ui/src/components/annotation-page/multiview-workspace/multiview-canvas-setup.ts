@@ -34,8 +34,20 @@ export function runSetupPipeline(params: {
         return;
     }
 
-    if (isInitialSetup || viewChanged) {
-        canvasInstance.fitCanvas(canvasContainer.clientWidth, canvasContainer.clientHeight);
+    const containerWidth = canvasContainer.clientWidth;
+    const containerHeight = canvasContainer.clientHeight;
+
+    // Always call fitCanvas when:
+    // 1. Initial setup or view change (standard path)
+    // 2. Container size differs from current canvasSize (safety net for late
+    //    layout shifts that the ResizeObserver debounce hasn't caught yet)
+    const currentGeometry = canvasInstance.geometry;
+    const containerSizeChanged = containerWidth > 0 && containerHeight > 0 &&
+        (currentGeometry.canvas.width !== containerWidth ||
+         currentGeometry.canvas.height !== containerHeight);
+
+    if (isInitialSetup || viewChanged || containerSizeChanged) {
+        canvasInstance.fitCanvas(containerWidth, containerHeight);
     }
 
     if (zoomLevel <= 1.0) {

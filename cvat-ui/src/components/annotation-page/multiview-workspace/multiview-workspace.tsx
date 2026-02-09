@@ -453,6 +453,7 @@ export default function MultiviewWorkspace(): JSX.Element {
                 videoElement={videoElement}
                 activeViewId={activeView}
                 onZoom={handleZoom}
+                zoomLevel={zoomState.level}
             />
         </Layout>
     );

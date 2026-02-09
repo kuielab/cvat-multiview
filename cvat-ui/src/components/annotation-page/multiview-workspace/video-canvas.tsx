@@ -103,17 +103,20 @@ export default function VideoCanvas(props: Props): JSX.Element {
             return;
         }
 
-        // Check if metadata already loaded
-        if (video.videoWidth > 0 && video.videoHeight > 0) {
-            // Metadata already loaded - call callback immediately
+        // Check if first frame already decoded (stable dimensions)
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
+            // First frame already decoded - call callback immediately
             onCanvasContainerReady(node, video);
         } else {
-            // Wait for metadata to load before calling callback
-            const handleMetadataLoaded = (): void => {
-                video.removeEventListener('loadedmetadata', handleMetadataLoaded);
+            // Wait for first frame decode ('loadeddata') instead of just metadata.
+            // 'loadedmetadata' fires when headers are parsed but dimensions may not
+            // be fully stable yet (codec initialization). 'loadeddata' fires after
+            // the first frame is actually decoded, guaranteeing stable videoWidth/Height.
+            const handleDataLoaded = (): void => {
+                video.removeEventListener('loadeddata', handleDataLoaded);
                 onCanvasContainerReady(node, video);
             };
-            video.addEventListener('loadedmetadata', handleMetadataLoaded);
+            video.addEventListener('loadeddata', handleDataLoaded);
         }
     }, [onCanvasContainerReady, isActive, viewId]);
 
@@ -186,8 +189,8 @@ export default function VideoCanvas(props: Props): JSX.Element {
         if (!container || !isActive) return undefined;
 
         const handleMouseDown = (e: MouseEvent): void => {
-            // Middle button (1) or Alt+Left (0) for panning
-            const isPanTrigger = e.button === 1 || (e.button === 0 && e.altKey);
+            // Middle button (1), Alt+Left (0), or Right button (2) for panning when zoomed
+            const isPanTrigger = e.button === 1 || (e.button === 0 && e.altKey) || e.button === 2;
             if (!isPanTrigger) return;
             if (!zoomState || zoomState.level <= 1.0) return;
 
@@ -208,13 +211,22 @@ export default function VideoCanvas(props: Props): JSX.Element {
             isPanningRef.current = false;
         };
 
+        // Prevent context menu when right-click is used for panning (zoomed state only)
+        const handleContextMenu = (e: MouseEvent): void => {
+            if (zoomState && zoomState.level > 1.0) {
+                e.preventDefault();
+            }
+        };
+
         // Use capture phase so pan intercepts before canvas sees Alt+click
         container.addEventListener('mousedown', handleMouseDown, { capture: true });
+        container.addEventListener('contextmenu', handleContextMenu);
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
 
         return () => {
             container.removeEventListener('mousedown', handleMouseDown, { capture: true } as EventListenerOptions);
+            container.removeEventListener('contextmenu', handleContextMenu);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
