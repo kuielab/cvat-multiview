@@ -97,6 +97,8 @@ API: `POST /api/tasks/create_multiview/`
 | Multi-class 모드에서 Sound 라벨 안 지워짐 | CVAT PATCH API는 라벨 추가만 가능 → DELETE `/api/labels/{id}` 사용 | `insert_bbox_annotations.py` |
 | Pre-annotation 편집 시 다른 annotation 위치 변경됨 | `cloneObjectStateForDisplay()` 헬퍼로 ObjectState의 non-enumerable 속성 명시적 복사 | `multiview-canvas-wrapper.tsx` |
 | Shape을 뷰 상단/하단으로 드래그하면 축소됨 | videoElement 실제 치수 우선 사용 + `clampPointsToCanvasBounds()` 추가 | `multiview-canvas-wrapper.tsx` |
+| 작은 Shape 드래그 시 크기 축소/튀어서 사라짐 | `enforceMinimumShapeDimensions()` 함수 추가 - resize handle과 shape body 겹침 감지 및 보정 | `multiview-canvas-wrapper.tsx` |
+| 반복 리사이즈 시 Shape 사라짐 (sidebar에는 남음) | `normalizeAndEnforceTaskSpaceDimensions()` 함수 추가 - task 공간 좌표 정규화 + 최소 치수(2px) 강제 | `multiview-canvas-wrapper.tsx` |
 
 ---
 
@@ -376,9 +378,139 @@ python scripts/init/insert_bbox_annotations.py \
 
 ## Last Updated
 
-2026-02-08 (Shape 뷰 경계 드래그 시 축소 버그 수정 - v14)
+2026-02-09 (반복 리사이즈 시 Shape 사라지는 버그 수정 - v16)
 
-### 최근 변경 사항 (2026-02-08) - v14
+### 최근 변경 사항 (2026-02-09) - v16
+
+**수정된 파일**:
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
+
+#### Rectangle bbox를 여러 번 리사이즈하면 사라지는 버그 수정
+
+**문제**: Multiview workspace에서 rectangle bbox의 크기를 여러 번 조절하다 보면, 갑자기 shape이 커졌다가 캔버스에서 사라지거나 보이지 않게 됨. 우측 Objects 목록에는 남아있으나 캔버스 뷰에서는 보이지 않음
+
+**근본 원인 (3단계 실패 체인)**:
+
+1. **좌표 변환 후 sub-pixel 치수**: Canvas 공간(1920×1440)에서 task 공간(1920×1080)으로 좌표 변환 시, Y 스케일 (0.75) 적용 후 width 또는 height가 1px 미만이 될 수 있음
+
+2. **`checkShapeArea()` silent rejection**: `annotations-objects.ts:500-502`에서 `fitPoints()` 후 치수가 `MIN_SHAPE_SIZE(1)` 미만이면 `fittedPoints = []`로 설정. 이 빈 배열이 `Shape.save()` line 781의 `if (updated.points && fittedPoints.length)` 조건에 걸려 **save를 건너뜀** — 에러 없이 조용히 실패
+
+3. **Canvas/Redux 상태 불일치**: Canvas는 편집된 좌표를 보여주지만, Redux/API는 이전 좌표를 유지. 이후 `setupObjects()` 호출 시 상태 차이로 인해 shape이 비정상적으로 렌더링되거나 사라짐
+
+**버그 발현 데이터** (수정 전):
+```
+Shape 3 원본: [300, 200, 400, 300] (width=100, height=100)
+5회 리사이즈 후 canvas: width=14px, height=302px (비대칭 왜곡)
+추가 리사이즈: width=1730px (전체 뷰 커버) → SVG frozen
+API 좌표: [300, 200, 400, 300] (변경 없음 — save 실패)
+```
+
+**해결책**: `normalizeAndEnforceTaskSpaceDimensions()` 함수 추가
+
+```typescript
+const MIN_TASK_SHAPE_SIZE = 2; // checkShapeArea의 MIN_SHAPE_SIZE(1)보다 큰 안전 마진
+
+function normalizeAndEnforceTaskSpaceDimensions(
+    points: number[],    // task 공간 좌표 [x1, y1, x2, y2]
+    taskWidth: number,
+    taskHeight: number,
+): number[] {
+    // 1. 좌표 정규화: x1 ≤ x2, y1 ≤ y2 보장 (음수 SVG 치수 방지)
+    // 2. 최소 치수 강제: width/height < MIN_TASK_SHAPE_SIZE면 중심 기준 확장
+    // 3. Task 경계 클램핑: 최소 치수 강제로 경계 벗어나면 다시 안으로 이동
+    // 4. 안전망 클램핑: 모든 좌표 [0, taskWidth/Height] 범위 내 보장
+}
+```
+
+**적용 위치** (2곳):
+1. `onCanvasEditDone` — shape 편집 완료 시, 좌표 변환 직후
+2. `onShapeDrawn` (canvas.drawn 핸들러) — 새 shape 생성 시
+
+```typescript
+// onCanvasEditDone 내:
+updatedPoints = transformPointsForStorage(updatedPoints, ...);
+
+// 추가: task 공간에서 정규화 + 최소 치수 강제
+if (!rotation && state.shapeType === 'rectangle' && updatedPoints.length === 4) {
+    updatedPoints = normalizeAndEnforceTaskSpaceDimensions(
+        updatedPoints, transformParams.taskWidth, transformParams.taskHeight,
+    );
+}
+
+dispatch(updateAnnotationsAsync([originalState]));
+```
+
+**검증 결과** (Playwright 자동 테스트):
+- 23회 연속 리사이즈: Shape 유지 (사라지지 않음) ✓
+- SVG 치수: 100×133 → 최소 18.4×22.5에서 안정화 (더 이상 축소 안됨) ✓
+- API 저장 정상: width=18.4, height=16.9 (MIN_TASK_SHAPE_SIZE 이상) ✓
+- 다른 shape 영향 없음: Shape 1, 2 좌표 변경 없음 ✓
+- Canvas/Redux 동기화: SVG width=18.4 == API width=18.4 ✓
+
+### 이전 변경 사항 (2026-02-09) - v15
+
+**수정된 파일**:
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
+
+#### 작은 Shape 드래그 시 크기가 축소되거나 튀어서 사라지는 버그 수정
+
+**문제**: Multiview workspace에서 작은 rectangle shape(화면상 ~7×7px)을 마우스로 드래그하면, shape이 의도치 않게 크기가 축소되거나 갑자기 커졌다가 사라짐
+
+**근본 원인**: CVAT canvas의 resize handle(8.2×8.2px)이 shape body(7×7px)보다 큼
+
+- 활성화된 shape에 9개의 resize handle(4 모서리 + 4 변 + 1 회전)이 표시됨
+- handle 크기: `2 * controlPointsSize / scale` = 약 8px
+- 작은 shape의 경우 handle이 shape 면적의 33~58%를 가림
+- 사용자가 shape 중심을 클릭해도 실제로는 resize handle(예: left edge)을 클릭하게 됨
+- 드래그 시 shape 전체 이동 대신 한쪽 변만 이동 → width 또는 height가 급격히 축소
+
+**버그 발현 데이터** (수정 전):
+```
+원본 canvas 좌표: [600, 533, 620, 553] (width=20, height=20)
+드래그 후:        [617, 533, 620, 553] (width=3,  height=20)
+→ x1만 600→617로 이동, x2는 620 고정 (left edge resize handle에 드래그가 걸림)
+→ 화면상 width: 7px → 1px (85% 축소!)
+```
+
+**해결책**: `enforceMinimumShapeDimensions()` 함수 추가
+
+```typescript
+const MIN_SHAPE_DIMENSION = 10; // canvas 좌표 기준 최소 치수
+
+function enforceMinimumShapeDimensions(
+    newPoints: number[],    // 편집 후 좌표
+    originalPoints: number[], // 편집 전 좌표
+): number[] {
+    // 1. 원래 shape이 작았는지 확인 (origWidth < 40 || origHeight < 40)
+    // 2. 의도치 않은 resize 감지: 한 축이 50% 미만으로 축소 + 다른 축은 변화 적음
+    // 3. 감지 시 축소된 축의 원래 치수를 복원하고 새 중심점에 맞춰 재배치
+    // 4. 최종 안전망: 절대 최소 치수(MIN_SHAPE_DIMENSION) 보장
+}
+```
+
+**적용 위치**: `onCanvasEditDone` 핸들러에서 좌표 변환(clamp, transform) 이전에 호출
+
+```typescript
+// 기존: 바로 clamp + transform
+// 수정: enforceMinimumShapeDimensions → clamp → transform
+if (!rotation && state.shapeType === 'rectangle' && ...) {
+    updatedPoints = enforceMinimumShapeDimensions(updatedPoints, state.points);
+}
+```
+
+**감지 로직**:
+- `widthRatio < 0.5` && `heightRatio` 정상 → width가 축소됨 (left/right handle 오조작)
+- `heightRatio < 0.5` && `widthRatio` 정상 → height가 축소됨 (top/bottom handle 오조작)
+- 감지 시: 축소된 축의 원래 치수를 복원, 새 중심점 기준으로 재배치
+
+**검증 결과**:
+- 작은 shape 오른쪽 드래그: 크기 유지(width 변화 0.00), 위치만 이동 ✓
+- 작은 shape 아래로 드래그: 크기 유지(height 변화 0.00), 위치만 이동 ✓
+- BR handle 리사이즈: 정상적으로 height 7→47 증가 (의도적 리사이즈 보존) ✓
+- 큰 shape 드래그: 크기 유지, 위치만 이동 ✓
+- API 좌표 검증: 원래 치수 유지 확인 ✓
+
+### 이전 변경 사항 (2026-02-08) - v14
 
 **수정된 파일**:
 - `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
