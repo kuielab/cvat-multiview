@@ -1207,6 +1207,18 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
+        // CRITICAL: Do not run setup until video dimensions are confirmed.
+        // Without valid videoWidth/videoHeight, transformParamsRef will be set to null,
+        // causing bbox coordinates to display in task space instead of canvas space.
+        // This prevents the race condition where annotations arrive in Redux
+        // (via fetchAnnotationsAsync / changeFrameAsync) before the video element
+        // has decoded its metadata, resulting in slightly misaligned bboxes on first load.
+        // The mount effect (gated by loadedmetadata) handles the initial setup;
+        // this effect handles subsequent updates once video dimensions are stable.
+        if (!videoElement?.videoWidth || !videoElement?.videoHeight) {
+            return;
+        }
+
         // Skip setup if canvas is in draw mode or draw operation is requested
         // This preserves active drawing state - canvas will be updated when drawing completes
         if (shouldPreserveDrawState(canvasInstance, activeControl)) {
@@ -1222,8 +1234,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // videoElement gives TRUE dimensions of the video file (e.g., 320x240),
         // while metadata may store task dimensions (e.g., 1920x1080) which can be wrong.
         const metadataDims = getVideoDimensionsFromMetadata(multiviewData, activeViewId);
-        const videoWidth = videoElement?.videoWidth || metadataDims?.width || 0;
-        const videoHeight = videoElement?.videoHeight || metadataDims?.height || 0;
+        const videoWidth = videoElement.videoWidth || metadataDims?.width || 0;
+        const videoHeight = videoElement.videoHeight || metadataDims?.height || 0;
         const transformResult = createVideoProportionalFrameData(frameData, videoWidth, videoHeight);
 
         // Store transform params for coordinate transformation on annotation save
