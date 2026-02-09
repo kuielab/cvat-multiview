@@ -5,9 +5,15 @@
 
 # Build outputs
 **/dist/
-!cvat-ui/dist/favicon.ico
 **/node_modules/
 **/__pycache__/
 /.playwright-mcp/
 docker-compose.override.yml
 scripts/init/setup_ielab_production.sh
+
+# Test artifacts
+zoom-test-*.png
+nul
+
+# Yarn
+.yarn/

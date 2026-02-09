@@ -78,6 +78,7 @@ interface Props {
     canvasContainer: HTMLDivElement | null;
     videoElement: HTMLVideoElement | null;
     activeViewId: number;
+    onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
 }
 
 /**
@@ -167,6 +168,250 @@ function transformPointsForDisplay(
 }
 
 /**
+ * Clamp annotation points to canvas bounds, preserving shape size when possible.
+ * For drag operations (shape moved out of bounds), translates the entire shape
+ * back within bounds so it "slides" along the wall without shrinking.
+ * For resize operations (shape enlarged past boundary), per-point clamping applies.
+ *
+ * This prevents the backend fitPoints() from clamping in task space, which
+ * causes shapes to shrink when aspect ratio differs between video and task.
+ */
+function clampPointsToCanvasBounds(
+    points: number[],
+    canvasWidth: number,
+    canvasHeight: number,
+): number[] {
+    if (points.length < 4) return points;
+
+    // Compute bounding box
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < points.length; i += 2) {
+        xs.push(points[i]);
+        ys.push(points[i + 1]);
+    }
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    // Compute translation needed to push shape back within bounds
+    // This preserves shape dimensions for drag operations
+    let dx = 0;
+    let dy = 0;
+    if (maxX > canvasWidth) dx = canvasWidth - maxX; // shift left
+    if (minX + dx < 0) dx = -minX; // shift right (wins if shape fits)
+    if (maxY > canvasHeight) dy = canvasHeight - maxY; // shift up
+    if (minY + dy < 0) dy = -minY; // shift down
+
+    // Apply translation
+    const shifted = points.map((v, i) => (i % 2 === 0 ? v + dx : v + dy));
+
+    // Final per-point clamp for safety (handles shapes larger than canvas)
+    return shifted.map((v, i) => {
+        if (i % 2 === 0) return Math.max(0, Math.min(v, canvasWidth));
+        return Math.max(0, Math.min(v, canvasHeight));
+    });
+}
+
+/**
+ * Minimum shape dimension in canvas coordinates.
+ * When a shape's width or height falls below this threshold after an edit,
+ * we enforce this minimum to prevent shapes from collapsing due to
+ * accidental resize (resize handles larger than the shape itself).
+ *
+ * In canvas space the coordinate system is typically 1920×1440,
+ * so 10 units is extremely small (well below the ~20 units where
+ * resize handles start overlapping the shape body).
+ */
+const MIN_SHAPE_DIMENSION = 10;
+
+/**
+ * Minimum shape dimension in task (storage) coordinates.
+ * The backend's checkShapeArea() silently rejects shapes with width or
+ * height < 1, causing save() to skip the point update without error.
+ * This leads to canvas/Redux state divergence — the shape appears
+ * distorted or invisible on canvas while remaining in the sidebar list.
+ *
+ * We use 2 instead of 1 for a safety margin against floating-point rounding.
+ */
+const MIN_TASK_SHAPE_SIZE = 2;
+
+/**
+ * Normalize and enforce minimum dimensions on rectangle points in task space.
+ * This is the last line of defense before saving to Redux/backend.
+ *
+ * Fixes two classes of bugs:
+ * 1. **Inverted coordinates** (x1 > x2 or y1 > y2): SVG rects get negative
+ *    width/height and become invisible. Normalizing ensures x1 ≤ x2, y1 ≤ y2.
+ * 2. **Sub-pixel dimensions**: After coordinate space transforms, a shape may
+ *    end up with width or height < 1 in task space. The backend's
+ *    checkShapeArea() silently sets fittedPoints=[], causing Shape.save() to
+ *    skip persisting the new points. The shape then diverges between canvas
+ *    (which shows the edit) and Redux/API (which keeps the old position).
+ *
+ * @param points  Rectangle points [x1, y1, x2, y2] in task space
+ * @param taskWidth  Task frame width (for boundary clamping)
+ * @param taskHeight Task frame height (for boundary clamping)
+ * @returns Normalized, minimum-enforced points guaranteed to pass checkShapeArea()
+ */
+function normalizeAndEnforceTaskSpaceDimensions(
+    points: number[],
+    taskWidth: number,
+    taskHeight: number,
+): number[] {
+    if (points.length !== 4) return points;
+
+    // 1. Normalize: ensure x1 ≤ x2, y1 ≤ y2
+    let [x1, y1, x2, y2] = points;
+    if (x1 > x2) [x1, x2] = [x2, x1];
+    if (y1 > y2) [y1, y2] = [y2, y1];
+
+    // 2. Enforce minimum dimensions (must pass checkShapeArea)
+    let width = x2 - x1;
+    let height = y2 - y1;
+
+    if (width < MIN_TASK_SHAPE_SIZE) {
+        const cx = (x1 + x2) / 2;
+        x1 = cx - MIN_TASK_SHAPE_SIZE / 2;
+        x2 = cx + MIN_TASK_SHAPE_SIZE / 2;
+        width = MIN_TASK_SHAPE_SIZE;
+    }
+    if (height < MIN_TASK_SHAPE_SIZE) {
+        const cy = (y1 + y2) / 2;
+        y1 = cy - MIN_TASK_SHAPE_SIZE / 2;
+        y2 = cy + MIN_TASK_SHAPE_SIZE / 2;
+        height = MIN_TASK_SHAPE_SIZE;
+    }
+
+    // 3. Clamp to task bounds (don't let the minimum enforcement push outside)
+    if (x1 < 0) { x2 -= x1; x1 = 0; }
+    if (y1 < 0) { y2 -= y1; y1 = 0; }
+    if (x2 > taskWidth) { x1 -= (x2 - taskWidth); x2 = taskWidth; }
+    if (y2 > taskHeight) { y1 -= (y2 - taskHeight); y2 = taskHeight; }
+
+    // 4. Final clamp (safety for edge cases where shape > canvas)
+    x1 = Math.max(0, x1);
+    y1 = Math.max(0, y1);
+    x2 = Math.min(taskWidth, x2);
+    y2 = Math.min(taskHeight, y2);
+
+    return [x1, y1, x2, y2];
+}
+
+/**
+ * Enforce minimum shape dimensions for rectangle shapes.
+ * When shapes are very small, the canvas resize handles (8×8px) overlap
+ * the shape body, causing the user to accidentally resize instead of drag.
+ * This function detects when a shape dimension has collapsed below the
+ * minimum threshold and corrects it by preserving the original dimension.
+ *
+ * @param newPoints - The edited points [x1, y1, x2, y2] in canvas space
+ * @param originalPoints - The original points [x1, y1, x2, y2] in canvas (display) space
+ * @returns Corrected points with minimum dimensions enforced
+ */
+function enforceMinimumShapeDimensions(
+    newPoints: number[],
+    originalPoints: number[],
+): number[] {
+    if (newPoints.length !== 4 || originalPoints.length !== 4) return newPoints;
+
+    const [nx1, ny1, nx2, ny2] = newPoints;
+    const [ox1, oy1, ox2, oy2] = originalPoints;
+
+    let newWidth = Math.abs(nx2 - nx1);
+    let newHeight = Math.abs(ny2 - ny1);
+    const origWidth = Math.abs(ox2 - ox1);
+    const origHeight = Math.abs(oy2 - oy1);
+
+    // Only apply correction if the shape was already small before the edit
+    // (below resize-handle overlap threshold, roughly 2× the handle point size)
+    const isSmallShape = origWidth < 40 || origHeight < 40;
+    if (!isSmallShape) return newPoints;
+
+    let correctedX1 = Math.min(nx1, nx2);
+    let correctedY1 = Math.min(ny1, ny2);
+    let correctedX2 = Math.max(nx1, nx2);
+    let correctedY2 = Math.max(ny1, ny2);
+
+    // Detect accidental resize: one dimension shrunk dramatically while the other stayed similar.
+    // This happens when the user intended to drag but hit a resize handle instead.
+    const widthRatio = origWidth > 0 ? newWidth / origWidth : 1;
+    const heightRatio = origHeight > 0 ? newHeight / origHeight : 1;
+
+    // If one dimension shrunk to <50% while the other didn't grow much, it's an accidental resize.
+    // Restore the original dimension and treat it as a drag.
+    if (widthRatio < 0.5 && heightRatio > 0.5 && heightRatio < 2.0) {
+        // Width collapsed — was dragging a left/right edge handle accidentally
+        // Restore original width, centered on the new center X
+        const centerX = (correctedX1 + correctedX2) / 2;
+        correctedX1 = centerX - origWidth / 2;
+        correctedX2 = centerX + origWidth / 2;
+        newWidth = origWidth;
+    } else if (heightRatio < 0.5 && widthRatio > 0.5 && widthRatio < 2.0) {
+        // Height collapsed — was dragging a top/bottom edge handle accidentally
+        // Restore original height, centered on the new center Y
+        const centerY = (correctedY1 + correctedY2) / 2;
+        correctedY1 = centerY - origHeight / 2;
+        correctedY2 = centerY + origHeight / 2;
+        newHeight = origHeight;
+    }
+
+    // Final safety: enforce absolute minimum dimensions
+    if (newWidth < MIN_SHAPE_DIMENSION) {
+        const centerX = (correctedX1 + correctedX2) / 2;
+        correctedX1 = centerX - MIN_SHAPE_DIMENSION / 2;
+        correctedX2 = centerX + MIN_SHAPE_DIMENSION / 2;
+    }
+    if (newHeight < MIN_SHAPE_DIMENSION) {
+        const centerY = (correctedY1 + correctedY2) / 2;
+        correctedY1 = centerY - MIN_SHAPE_DIMENSION / 2;
+        correctedY2 = centerY + MIN_SHAPE_DIMENSION / 2;
+    }
+
+    return [correctedX1, correctedY1, correctedX2, correctedY2];
+}
+
+/**
+ * Create a display-safe clone of an ObjectState with overridden points.
+ *
+ * ObjectState uses Object.defineProperties with non-enumerable accessor descriptors,
+ * which means the spread operator `{ ...objectState }` copies ZERO properties.
+ * This function explicitly reads all properties needed by canvasView.ts setupObjects()
+ * and creates a plain object that the canvas can correctly diff, render, and track.
+ */
+function cloneObjectStateForDisplay(ann: any, newPoints: number[]): any {
+    return {
+        clientID: ann.clientID,
+        serverID: ann.serverID,
+        parentID: ann.parentID,
+        objectType: ann.objectType,
+        shapeType: ann.shapeType,
+        frame: ann.frame,
+        updated: ann.updated,
+        source: ann.source,
+        isGroundTruth: ann.isGroundTruth,
+        label: ann.label,
+        color: ann.color,
+        hidden: ann.hidden,
+        pinned: ann.pinned,
+        lock: ann.lock,
+        outside: ann.outside,
+        occluded: ann.occluded,
+        zOrder: ann.zOrder,
+        rotation: ann.rotation,
+        attributes: ann.attributes,
+        descriptions: ann.descriptions,
+        group: ann.group,
+        elements: ann.elements,
+        keyframe: ann.keyframe,
+        keyframes: ann.keyframes,
+        viewId: ann.viewId,
+        points: newPoints,
+    };
+}
+
+/**
  * Get video dimensions from Redux multiviewData metadata.
  * This provides consistent dimensions across sessions, unlike videoElement which
  * can have different dimensions depending on loading state or frame position.
@@ -185,7 +430,7 @@ function getVideoDimensionsFromMetadata(
 }
 
 export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null {
-    const { canvasContainer, videoElement, activeViewId } = props;
+    const { canvasContainer, videoElement, activeViewId, onZoom } = props;
     const dispatch = useDispatch();
     const mountedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -193,7 +438,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     // Track coordinate transformation parameters for aspect ratio correction
     // When video aspect ratio differs from task metadata, we need to transform coordinates
-    const transformParamsRef = useRef<{ canvasHeight: number; taskHeight: number } | null>(null);
+    // taskWidth is included for boundary clamping (X doesn't scale but needs a bound)
+    const transformParamsRef = useRef<{ canvasHeight: number; taskHeight: number; taskWidth: number } | null>(null);
 
     // Redux state selectors
     const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
@@ -325,11 +571,26 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // This ensures annotations are stored in the original video coordinate system
         const transformParams = transformParamsRef.current;
         if (transformParams && state.points && Array.isArray(state.points)) {
+            // Pre-clamp in canvas space to prevent shrinkage from aspect ratio mismatch
+            state.points = clampPointsToCanvasBounds(
+                state.points,
+                transformParams.taskWidth,
+                transformParams.canvasHeight,
+            );
             state.points = transformPointsForStorage(
                 state.points,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
             );
+
+            // Normalize and enforce minimum dimensions in task space for new shapes
+            if (state.shapeType === 'rectangle' && state.points.length === 4 && !state.rotation) {
+                state.points = normalizeAndEnforceTaskSpaceDimensions(
+                    state.points,
+                    transformParams.taskWidth,
+                    transformParams.taskHeight,
+                );
+            }
         }
 
         try {
@@ -487,13 +748,19 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [canvasInstance, dispatch]);
 
     /**
-     * Handle wheel event on canvas - prevent canvas zoom
-     * Mouse wheel should NOT zoom the canvas in Multiview workspace
+     * Handle wheel event on canvas overlay.
+     * Block the canvas's internal SVG zoom (which would only zoom the canvas
+     * without zooming the video) and relay the event to the parent's CSS zoom
+     * handler that scales the entire video+canvas container together.
      */
     const handleWheel = useCallback((e: WheelEvent): void => {
         e.preventDefault();
         e.stopPropagation();
-    }, []);
+        // Relay to parent for CSS-based zoom of video + canvas container
+        if (onZoom) {
+            onZoom(e.deltaY, e.clientX, e.clientY);
+        }
+    }, [onZoom]);
 
     /**
      * Handle mousedown in bubble phase - this is now a no-op as canvasView.ts
@@ -550,15 +817,48 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
-        // Transform coordinates from canvas space back to task space if needed
+        // For rectangle shapes without rotation, enforce minimum dimensions.
+        // When shapes are very small, CVAT's resize handles (8×8px) overlap the shape
+        // body, causing the user to accidentally resize instead of drag. This detects
+        // and corrects such accidental resizes by preserving the original dimension.
         const transformParams = transformParamsRef.current;
         let updatedPoints = points;
-        if (transformParams && points && Array.isArray(points)) {
+        if (!rotation && state.shapeType === 'rectangle' &&
+            updatedPoints && Array.isArray(updatedPoints) && updatedPoints.length === 4 &&
+            state.points && state.points.length === 4) {
+            updatedPoints = enforceMinimumShapeDimensions(updatedPoints, state.points);
+        }
+
+        // Transform coordinates from canvas space back to task space if needed
+        if (transformParams && updatedPoints && Array.isArray(updatedPoints)) {
+            // Pre-clamp in canvas space before converting to task space.
+            // This prevents the backend fitPoints() from shrinking shapes that
+            // extend beyond the canvas boundary due to aspect ratio mismatch.
+            // Skip clamping for rotated shapes (fitPoints also skips them).
+            if (!rotation) {
+                updatedPoints = clampPointsToCanvasBounds(
+                    updatedPoints,
+                    transformParams.taskWidth,
+                    transformParams.canvasHeight,
+                );
+            }
             updatedPoints = transformPointsForStorage(
-                points,
+                updatedPoints,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
             );
+
+            // Normalize and enforce minimum dimensions in task space.
+            // This prevents checkShapeArea() from silently rejecting the save
+            // when repeated resizes produce sub-pixel or inverted coordinates.
+            if (!rotation && state.shapeType === 'rectangle' &&
+                updatedPoints.length === 4) {
+                updatedPoints = normalizeAndEnforceTaskSpaceDimensions(
+                    updatedPoints,
+                    transformParams.taskWidth,
+                    transformParams.taskHeight,
+                );
+            }
         }
 
         // Update the original ObjectState (which has the save() method)
@@ -795,10 +1095,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // Initial setup with current frame data (only if not in draw mode or draw requested)
         if (stateRefs.current.frameData && !shouldPreserveDrawState(canvasInstance, stateRefs.current.activeControl)) {
             // Check if aspect ratio transformation is needed
-            // Priority: 1) Backend metadata (consistent across sessions), 2) videoElement (fallback)
+            // Priority: 1) videoElement (actual decoded video dimensions), 2) Backend metadata (fallback)
+            // videoElement gives TRUE dimensions of the video file (e.g., 320x240),
+            // while metadata may store task dimensions (e.g., 1920x1080) which can be wrong.
             const metadataDims = getVideoDimensionsFromMetadata(stateRefs.current.multiviewData, stateRefs.current.activeViewId);
-            const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
-            const videoHeight = metadataDims?.height || videoElement?.videoHeight || 0;
+            const videoWidth = videoElement?.videoWidth || metadataDims?.width || 0;
+            const videoHeight = videoElement?.videoHeight || metadataDims?.height || 0;
             const transformResult = createVideoProportionalFrameData(
                 stateRefs.current.frameData,
                 videoWidth,
@@ -810,6 +1112,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 transformParamsRef.current = {
                     canvasHeight: transformResult.canvasHeight,
                     taskHeight: transformResult.taskHeight,
+                    taskWidth: stateRefs.current.frameData.width,
                 };
             } else {
                 transformParamsRef.current = null;
@@ -841,8 +1144,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                             transformResult.canvasHeight,
                             transformResult.taskHeight,
                         );
-                        // Create a shallow copy with transformed points
-                        return { ...ann, points: transformedPoints };
+                        // Use explicit property clone instead of spread operator.
+                        // ObjectState uses non-enumerable defineProperties, so { ...ann }
+                        // copies ZERO properties and breaks canvas setupObjects() diffing.
+                        return cloneObjectStateForDisplay(ann, transformedPoints);
                     }
                     return ann;
                 });
@@ -909,6 +1214,18 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
+        // CRITICAL: Do not run setup until video dimensions are confirmed.
+        // Without valid videoWidth/videoHeight, transformParamsRef will be set to null,
+        // causing bbox coordinates to display in task space instead of canvas space.
+        // This prevents the race condition where annotations arrive in Redux
+        // (via fetchAnnotationsAsync / changeFrameAsync) before the video element
+        // has decoded its metadata, resulting in slightly misaligned bboxes on first load.
+        // The mount effect (gated by loadedmetadata) handles the initial setup;
+        // this effect handles subsequent updates once video dimensions are stable.
+        if (!videoElement?.videoWidth || !videoElement?.videoHeight) {
+            return;
+        }
+
         // Skip setup if canvas is in draw mode or draw operation is requested
         // This preserves active drawing state - canvas will be updated when drawing completes
         if (shouldPreserveDrawState(canvasInstance, activeControl)) {
@@ -920,10 +1237,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const viewChanged = prevSetupViewIdRef.current !== null && prevSetupViewIdRef.current !== activeViewId;
 
         // Check if aspect ratio transformation is needed
-        // Priority: 1) Backend metadata (consistent across sessions), 2) videoElement (fallback)
+        // Priority: 1) videoElement (actual decoded video dimensions), 2) Backend metadata (fallback)
+        // videoElement gives TRUE dimensions of the video file (e.g., 320x240),
+        // while metadata may store task dimensions (e.g., 1920x1080) which can be wrong.
         const metadataDims = getVideoDimensionsFromMetadata(multiviewData, activeViewId);
-        const videoWidth = metadataDims?.width || videoElement?.videoWidth || 0;
-        const videoHeight = metadataDims?.height || videoElement?.videoHeight || 0;
+        const videoWidth = videoElement.videoWidth || metadataDims?.width || 0;
+        const videoHeight = videoElement.videoHeight || metadataDims?.height || 0;
         const transformResult = createVideoProportionalFrameData(frameData, videoWidth, videoHeight);
 
         // Store transform params for coordinate transformation on annotation save
@@ -931,6 +1250,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             transformParamsRef.current = {
                 canvasHeight: transformResult.canvasHeight,
                 taskHeight: transformResult.taskHeight,
+                taskWidth: frameData.width,
             };
         } else {
             transformParamsRef.current = null;
@@ -963,8 +1283,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                         transformResult.canvasHeight,
                         transformResult.taskHeight,
                     );
-                    // Create a shallow copy with transformed points
-                    return { ...ann, points: transformedPoints };
+                    // Use explicit property clone instead of spread operator.
+                    // ObjectState uses non-enumerable defineProperties, so { ...ann }
+                    // copies ZERO properties and breaks canvas setupObjects() diffing.
+                    return cloneObjectStateForDisplay(ann, transformedPoints);
                 }
                 return ann;
             });

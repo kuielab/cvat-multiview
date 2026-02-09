@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
+import { ZoomState } from './multiview-workspace';
 
 interface VideoDisplayArea {
     width: number;
@@ -21,6 +22,9 @@ interface Props {
     playbackRate?: number;
     onCanvasContainerReady?: (container: HTMLDivElement | null, videoElement: HTMLVideoElement | null) => void;
     onVideoRef?: (viewId: number, video: HTMLVideoElement | null) => void;
+    zoomState?: ZoomState;
+    onPan?: (dx: number, dy: number) => void;
+    onZoomReset?: () => void;
 }
 
 /**
@@ -65,12 +69,17 @@ function calculateVideoDisplayArea(
 
 export default function VideoCanvas(props: Props): JSX.Element {
     const {
-        viewId, frameNumber, videoUrl, fps, isActive, playing, playbackRate, onCanvasContainerReady, onVideoRef,
+        viewId, frameNumber, videoUrl, fps, isActive, playing, playbackRate,
+        onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset,
     } = props;
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [videoDisplayArea, setVideoDisplayArea] = useState<VideoDisplayArea | null>(null);
+
+    // Pan state for middle-mouse-button / Alt+left drag
+    const isPanningRef = useRef(false);
+    const panStartRef = useRef({ x: 0, y: 0 });
 
     // Use callback ref to report video element to parent when mounted
     const videoCallbackRef = useCallback((node: HTMLVideoElement | null) => {
@@ -168,6 +177,60 @@ export default function VideoCanvas(props: Props): JSX.Element {
         };
     }, [videoUrl]);
 
+    /**
+     * Middle-mouse-button / Alt+left-click pan support when zoomed in.
+     * Listens on the container so pan works over both video and canvas overlay.
+     */
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container || !isActive) return undefined;
+
+        const handleMouseDown = (e: MouseEvent): void => {
+            // Middle button (1) or Alt+Left (0) for panning
+            const isPanTrigger = e.button === 1 || (e.button === 0 && e.altKey);
+            if (!isPanTrigger) return;
+            if (!zoomState || zoomState.level <= 1.0) return;
+
+            e.preventDefault();
+            isPanningRef.current = true;
+            panStartRef.current = { x: e.clientX, y: e.clientY };
+        };
+
+        const handleMouseMove = (e: MouseEvent): void => {
+            if (!isPanningRef.current || !onPan) return;
+            const dx = e.clientX - panStartRef.current.x;
+            const dy = e.clientY - panStartRef.current.y;
+            panStartRef.current = { x: e.clientX, y: e.clientY };
+            onPan(dx, dy);
+        };
+
+        const handleMouseUp = (): void => {
+            isPanningRef.current = false;
+        };
+
+        // Use capture phase so pan intercepts before canvas sees Alt+click
+        container.addEventListener('mousedown', handleMouseDown, { capture: true });
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+
+        return () => {
+            container.removeEventListener('mousedown', handleMouseDown, { capture: true } as EventListenerOptions);
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isActive, zoomState, onPan]);
+
+    /**
+     * Double-click to reset zoom (only when zoomed in).
+     */
+    const handleDoubleClick = useCallback((e: React.MouseEvent): void => {
+        if (zoomState && zoomState.level > 1.0 && onZoomReset) {
+            e.preventDefault();
+            e.stopPropagation();
+            onZoomReset();
+        }
+    }, [zoomState, onZoomReset]);
+
     // ALL video control (play/pause/seek) is handled by parent component
     // This component only renders the video element
 
@@ -187,27 +250,52 @@ export default function VideoCanvas(props: Props): JSX.Element {
         height: '100%',
     };
 
+    // CSS transform for zoom: translate then scale from origin (0,0).
+    // Both video and canvas overlay are inside the zoom-wrapper so they scale
+    // together — bbox coordinates stay perfectly aligned with the video image.
+    const zoomLevel = zoomState?.level ?? 1.0;
+    const zoomWrapperStyle: React.CSSProperties = {
+        width: '100%',
+        height: '100%',
+        position: 'relative' as const,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transformOrigin: '0 0',
+        transform: zoomLevel > 1.0
+            ? `translate(${zoomState!.translateX}px, ${zoomState!.translateY}px) scale(${zoomLevel})`
+            : 'none',
+        willChange: zoomLevel > 1.0 ? 'transform' : 'auto',
+    };
+
     return (
-        <div ref={containerRef} className='video-canvas-container'>
-            <video
-                ref={videoCallbackRef}
-                src={videoUrl}
-                className='multiview-video'
-                playsInline
-                crossOrigin="anonymous"
-                muted={!isActive}
-            />
-            {isActive && (
-                <div
-                    ref={canvasContainerCallbackRef}
-                    className='annotation-canvas-overlay active-canvas'
-                    style={canvasOverlayStyle}
+        <div ref={containerRef} className='video-canvas-container' onDoubleClick={handleDoubleClick}>
+            <div className='zoom-wrapper' style={zoomWrapperStyle}>
+                <video
+                    ref={videoCallbackRef}
+                    src={videoUrl}
+                    className='multiview-video'
+                    playsInline
+                    crossOrigin="anonymous"
+                    muted={!isActive}
                 />
-            )}
+                {isActive && (
+                    <div
+                        ref={canvasContainerCallbackRef}
+                        className='annotation-canvas-overlay active-canvas'
+                        style={canvasOverlayStyle}
+                    />
+                )}
+            </div>
             <div className='view-label'>
                 View {viewId}
                 {isActive && <span className='active-indicator'> (Active)</span>}
             </div>
+            {isActive && zoomLevel > 1.0 && (
+                <div className='zoom-indicator'>
+                    {Math.round(zoomLevel * 100)}%
+                </div>
+            )}
         </div>
     );
 }
