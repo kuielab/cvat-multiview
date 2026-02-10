@@ -77,9 +77,16 @@ export default function VideoCanvas(props: Props): JSX.Element {
     const containerRef = useRef<HTMLDivElement>(null);
     const [videoDisplayArea, setVideoDisplayArea] = useState<VideoDisplayArea | null>(null);
 
-    // Pan state for middle-mouse-button / Alt+left drag
+    // Ref for zoomState to avoid re-registering event listeners on every zoom change.
+    // Sync assignment (not useEffect) guarantees the ref is current before any handler fires.
+    const zoomStateRef = useRef(zoomState);
+    zoomStateRef.current = zoomState;
+
+    // Pan state for panning when zoomed in
     const isPanningRef = useRef(false);
     const panStartRef = useRef({ x: 0, y: 0 });
+    // Track actual pan distance to suppress click events after left-click pan
+    const panDistanceRef = useRef(0);
 
     // Use callback ref to report video element to parent when mounted
     const videoCallbackRef = useCallback((node: HTMLVideoElement | null) => {
@@ -103,17 +110,20 @@ export default function VideoCanvas(props: Props): JSX.Element {
             return;
         }
 
-        // Check if metadata already loaded
-        if (video.videoWidth > 0 && video.videoHeight > 0) {
-            // Metadata already loaded - call callback immediately
+        // Check if first frame already decoded (stable dimensions)
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
+            // First frame already decoded - call callback immediately
             onCanvasContainerReady(node, video);
         } else {
-            // Wait for metadata to load before calling callback
-            const handleMetadataLoaded = (): void => {
-                video.removeEventListener('loadedmetadata', handleMetadataLoaded);
+            // Wait for first frame decode ('loadeddata') instead of just metadata.
+            // 'loadedmetadata' fires when headers are parsed but dimensions may not
+            // be fully stable yet (codec initialization). 'loadeddata' fires after
+            // the first frame is actually decoded, guaranteeing stable videoWidth/Height.
+            const handleDataLoaded = (): void => {
+                video.removeEventListener('loadeddata', handleDataLoaded);
                 onCanvasContainerReady(node, video);
             };
-            video.addEventListener('loadedmetadata', handleMetadataLoaded);
+            video.addEventListener('loadeddata', handleDataLoaded);
         }
     }, [onCanvasContainerReady, isActive, viewId]);
 
@@ -178,7 +188,9 @@ export default function VideoCanvas(props: Props): JSX.Element {
     }, [videoUrl]);
 
     /**
-     * Middle-mouse-button / Alt+left-click pan support when zoomed in.
+     * Pan support when zoomed in.
+     * - Middle button (1), Right button (2), Alt+Left: always pan when zoomed
+     * - Left button (0) on background: pan when zoomed (skip shapes & draw mode)
      * Listens on the container so pan works over both video and canvas overlay.
      */
     useEffect(() => {
@@ -186,14 +198,41 @@ export default function VideoCanvas(props: Props): JSX.Element {
         if (!container || !isActive) return undefined;
 
         const handleMouseDown = (e: MouseEvent): void => {
-            // Middle button (1) or Alt+Left (0) for panning
-            const isPanTrigger = e.button === 1 || (e.button === 0 && e.altKey);
-            if (!isPanTrigger) return;
-            if (!zoomState || zoomState.level <= 1.0) return;
+            const currentZoom = zoomStateRef.current;
+            if (!currentZoom || currentZoom.level <= 1.0) return;
 
-            e.preventDefault();
-            isPanningRef.current = true;
-            panStartRef.current = { x: e.clientX, y: e.clientY };
+            // Middle button (1), Right button (2), Alt+Left (0) - always pan when zoomed
+            if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
+                e.preventDefault();
+                isPanningRef.current = true;
+                panDistanceRef.current = 0;
+                panStartRef.current = { x: e.clientX, y: e.clientY };
+                return;
+            }
+
+            // Left click (button 0) without Alt - pan on background when zoomed
+            if (e.button === 0) {
+                const target = e.target as Element;
+
+                // Don't pan if clicking on a shape or its interactive parts
+                if (target.closest('.cvat_canvas_shape') ||
+                    target.closest('.svg_select_points') ||
+                    target.closest('.svg_select_points_rot')) {
+                    return;
+                }
+
+                // Don't pan if canvas is in draw mode (crosshair cursor on SVG)
+                const svgEl = container.querySelector('.annotation-canvas-overlay svg');
+                if (svgEl && (svgEl as HTMLElement).style.cursor === 'crosshair') {
+                    return;
+                }
+
+                e.preventDefault();
+                e.stopPropagation();
+                isPanningRef.current = true;
+                panDistanceRef.current = 0;
+                panStartRef.current = { x: e.clientX, y: e.clientY };
+            }
         };
 
         const handleMouseMove = (e: MouseEvent): void => {
@@ -201,6 +240,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
             const dx = e.clientX - panStartRef.current.x;
             const dy = e.clientY - panStartRef.current.y;
             panStartRef.current = { x: e.clientX, y: e.clientY };
+            panDistanceRef.current += Math.abs(dx) + Math.abs(dy);
             onPan(dx, dy);
         };
 
@@ -208,28 +248,55 @@ export default function VideoCanvas(props: Props): JSX.Element {
             isPanningRef.current = false;
         };
 
-        // Use capture phase so pan intercepts before canvas sees Alt+click
+        // Suppress click events that follow a left-click pan drag.
+        // Without this, releasing the mouse after panning would fire a click
+        // event that could activate a shape or trigger unwanted actions.
+        const handleClick = (e: MouseEvent): void => {
+            if (panDistanceRef.current > 3) {
+                e.stopPropagation();
+                e.preventDefault();
+                panDistanceRef.current = 0;
+            }
+        };
+
+        // Prevent context menu when right-click is used for panning (zoomed state only).
+        // Use capture phase + stopPropagation to prevent CVAT's CanvasContextMenuContainer
+        // from opening on right-click release.
+        const handleContextMenu = (e: MouseEvent): void => {
+            const currentZoom = zoomStateRef.current;
+            if (currentZoom && currentZoom.level > 1.0) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        };
+
+        // Use capture phase so pan intercepts before canvas sees events
         container.addEventListener('mousedown', handleMouseDown, { capture: true });
+        container.addEventListener('click', handleClick, { capture: true });
+        container.addEventListener('contextmenu', handleContextMenu, { capture: true });
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
 
         return () => {
             container.removeEventListener('mousedown', handleMouseDown, { capture: true } as EventListenerOptions);
+            container.removeEventListener('click', handleClick, { capture: true } as EventListenerOptions);
+            container.removeEventListener('contextmenu', handleContextMenu, { capture: true } as EventListenerOptions);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-    }, [isActive, zoomState, onPan]);
+    }, [isActive, onPan]);
 
     /**
      * Double-click to reset zoom (only when zoomed in).
      */
     const handleDoubleClick = useCallback((e: React.MouseEvent): void => {
-        if (zoomState && zoomState.level > 1.0 && onZoomReset) {
+        const currentZoom = zoomStateRef.current;
+        if (currentZoom && currentZoom.level > 1.0 && onZoomReset) {
             e.preventDefault();
             e.stopPropagation();
             onZoomReset();
         }
-    }, [zoomState, onZoomReset]);
+    }, [onZoomReset]);
 
     // ALL video control (play/pause/seek) is handled by parent component
     // This component only renders the video element

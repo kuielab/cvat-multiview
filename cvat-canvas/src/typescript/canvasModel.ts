@@ -265,6 +265,8 @@ export interface CanvasModel {
 
     zoom(x: number, y: number, deltaY: number): void;
     move(topOffset: number, leftOffset: number): void;
+    lockViewport(): void;
+    unlockViewport(): void;
 
     setup(frameData: any, objectStates: any[], zLayer: number): void;
     setupIssueRegions(issueRegions: Record<number, { hidden: boolean; points: number[] }>): void;
@@ -384,6 +386,7 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
         mode: Mode;
         exception: Error | null;
         setupCalled: boolean;
+        viewportLocked: boolean;
     };
 
     public constructor() {
@@ -452,14 +455,26 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
             zLayer: null,
             viewId: null,
             selected: null,
-            mode: Mode.IDLE,
-            exception: null,
-            setupCalled: false,
-            ...defaultData,
-        };
+        mode: Mode.IDLE,
+        exception: null,
+        setupCalled: false,
+        viewportLocked: false,
+        ...defaultData,
+    };
+}
+
+    public lockViewport(): void {
+        this.data.viewportLocked = true;
+    }
+
+    public unlockViewport(): void {
+        this.data.viewportLocked = false;
     }
 
     public zoom(x: number, y: number, deltaY: number): void {
+        // When viewport is locked (multiview mode), CSS transform handles zoom
+        if (this.data.viewportLocked) return;
+
         const basicZoomCoef = 6 / 5; // historical value
         // less value of adjust coef, means zoomin/zoomout smoother
         // we need a trade-off between speed and smoothness, value 1 / 10 is good enough
@@ -494,6 +509,9 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
     }
 
     public move(topOffset: number, leftOffset: number): void {
+        // When viewport is locked (multiview mode), CSS transform handles pan
+        if (this.data.viewportLocked) return;
+
         this.data.top += topOffset;
         this.data.left += leftOffset;
         this.notify(UpdateReasons.IMAGE_MOVED);
@@ -658,17 +676,24 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
                 };
 
                 this.data.image = data;
-                this.resetScale();
 
-                // restore correct image position after switching to a new frame
-                // if corresponding option is disabled
-                // prevImageHeight and prevImageWidth are initialized by 0 by default
-                if (prevImageHeight !== 0 && prevImageWidth !== 0 && !this.data.configuration.resetZoom) {
-                    const leftOffset = Math.round((this.data.imageSize.width - prevImageWidth) / 2);
-                    const topOffset = Math.round((this.data.imageSize.height - prevImageHeight) / 2);
-                    this.data.left = prevImageLeft - leftOffset;
-                    this.data.top = prevImageTop - topOffset;
-                    this.data.scale *= relativeScaling;
+                // When the viewport is locked (multiview mode), CSS transform handles
+                // zoom/pan and the geometry set by fit()+lockViewport() is authoritative.
+                // resetScale() and the position-restoration block would overwrite those
+                // values with stale pre-fit() state, causing bbox misalignment on refresh.
+                if (!this.data.viewportLocked) {
+                    this.resetScale();
+
+                    // restore correct image position after switching to a new frame
+                    // if corresponding option is disabled
+                    // prevImageHeight and prevImageWidth are initialized by 0 by default
+                    if (prevImageHeight !== 0 && prevImageWidth !== 0 && !this.data.configuration.resetZoom) {
+                        const leftOffset = Math.round((this.data.imageSize.width - prevImageWidth) / 2);
+                        const topOffset = Math.round((this.data.imageSize.height - prevImageHeight) / 2);
+                        this.data.left = prevImageLeft - leftOffset;
+                        this.data.top = prevImageTop - topOffset;
+                        this.data.scale *= relativeScaling;
+                    }
                 }
 
                 this.notify(UpdateReasons.IMAGE_CHANGED);

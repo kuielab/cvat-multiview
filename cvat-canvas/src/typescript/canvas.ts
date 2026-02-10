@@ -48,6 +48,8 @@ interface Canvas {
     dragCanvas(enable: boolean): void;
     zoomCanvas(enable: boolean): void;
     setViewId(viewId: number | null): void;
+    lockViewport(): void;
+    unlockViewport(): void;
 
     mode(): Mode;
     cancel(): void;
@@ -114,6 +116,14 @@ class CanvasImpl implements Canvas {
 
     public setViewId(viewId: number | null): void {
         this.model.setViewId(viewId);
+    }
+
+    public lockViewport(): void {
+        this.model.lockViewport();
+    }
+
+    public unlockViewport(): void {
+        this.model.unlockViewport();
     }
 
     public activate(clientID: number | null, attributeID: number | null = null): void {
