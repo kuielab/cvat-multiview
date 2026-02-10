@@ -13,7 +13,6 @@ export function runSetupPipeline(params: {
     curZLayer: number;
     viewChanged: boolean;
     isInitialSetup: boolean;
-    zoomLevel: number;
     onViewportLocked?: () => void;
 }): void {
     const {
@@ -24,7 +23,6 @@ export function runSetupPipeline(params: {
         curZLayer,
         viewChanged,
         isInitialSetup,
-        zoomLevel,
         onViewportLocked,
     } = params;
 
@@ -50,9 +48,9 @@ export function runSetupPipeline(params: {
         canvasInstance.fitCanvas(containerWidth, containerHeight);
     }
 
-    if (zoomLevel <= 1.0) {
-        canvasInstance.fit();
-    }
+    // Always call fit() to keep SVG viewport geometry in sync with canvas dimensions.
+    // CSS zoom transform is additive on top of this baseline.
+    canvasInstance.fit();
 
     if (typeof (canvasInstance as any).lockViewport === 'function') {
         (canvasInstance as any).lockViewport();

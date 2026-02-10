@@ -92,8 +92,10 @@ interface Props {
     videoElement: HTMLVideoElement | null;
     activeViewId: number;
     onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
-    /** Current CSS zoom level (1.0 = no zoom). Used to guard fit() calls. */
+    /** Current CSS zoom level (1.0 = no zoom). Used to notify parent on resize while zoomed. */
     zoomLevel?: number;
+    /** Called when container resizes while zoomed, so parent can adjust CSS translate. */
+    onContainerResize?: (oldW: number, oldH: number, newW: number, newH: number) => void;
 }
 
 function prepareDisplayAnnotations(params: {
@@ -141,7 +143,7 @@ function prepareDisplayAnnotations(params: {
 }
 
 export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null {
-    const { canvasContainer, videoElement, activeViewId, onZoom, zoomLevel = 1.0 } = props;
+    const { canvasContainer, videoElement, activeViewId, onZoom, zoomLevel = 1.0, onContainerResize } = props;
     const dispatch = useDispatch();
     const mountedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -154,11 +156,17 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     // that would otherwise leave canvasSize stale and cause bbox misalignment.
     const viewportLockedRef = useRef(false);
 
-    // Ref for current CSS zoom level - used in ResizeObserver and setup effect
-    // to guard fit() calls. When zoomed, fit() would reset the SVG viewport
-    // causing shapes to visually jump while the CSS transform stays unchanged.
+    // Ref for current CSS zoom level - used in ResizeObserver to detect whether
+    // to notify parent of resize-while-zoomed for CSS translate adjustment.
     const zoomLevelRef = useRef(zoomLevel);
     zoomLevelRef.current = zoomLevel;
+
+    // Track previous container dimensions for resize-while-zoomed translate adjustment
+    const prevContainerSizeRef = useRef<{ width: number; height: number } | null>(null);
+
+    // Ref for onContainerResize callback to avoid re-registering ResizeObserver
+    const onContainerResizeRef = useRef(onContainerResize);
+    onContainerResizeRef.current = onContainerResize;
 
     // Track coordinate transformation parameters for aspect ratio correction
     // When video aspect ratio differs from task metadata, we need to transform coordinates
@@ -185,6 +193,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     const debugMultiview = typeof window !== 'undefined' &&
         (window as any).CVAT_DEBUG_MULTIVIEW === true;
+
+    const logDebug = useCallback((message: string, payload?: Record<string, unknown>): void => {
+        if (!debugMultiview) return;
+        // eslint-disable-next-line no-console
+        console.debug(`[MultiviewCanvas] ${message}`, payload || {});
+    }, [debugMultiview]);
 
     const { getStableVideoDims, version: videoDimsVersion } = useStableVideoDims({
         videoElement,
@@ -387,7 +401,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         }
 
         if (sidebarItem) {
-            sidebarItem.scrollIntoView();
+            // Save window scroll before scrollIntoView to prevent window-level
+            // scrolling when the sidebar extends beyond the viewport (small screens).
+            const scrollX = window.scrollX;
+            const scrollY = window.scrollY;
+            sidebarItem.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            window.scrollTo(scrollX, scrollY);
         }
     }, [dispatch]);
 
@@ -708,6 +727,12 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         canvasContainer.appendChild(canvasHTML);
         mountedRef.current = true;
 
+        // Initialize container size tracking early so ResizeObserver has a baseline
+        prevContainerSizeRef.current = {
+            width: canvasContainer.clientWidth,
+            height: canvasContainer.clientHeight,
+        };
+
         // Reset any stuck canvas modes to IDLE on mount
         // IMPORTANT: Skip cancel() if canvas is in draw mode to prevent interrupting active drawing
         const currentMode = canvasInstance.mode();
@@ -757,6 +782,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         const debouncedFitCanvas = debounce(() => {
             if (mountedRef.current && canvasInstance && canvasContainer) {
                 if (!setupCompletedRef.current) {
+                    logDebug('resize skipped: setup not completed', {
+                        containerWidth: canvasContainer.clientWidth,
+                        containerHeight: canvasContainer.clientHeight,
+                    });
                     return;
                 }
 
@@ -765,6 +794,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
                 // Skip if container has zero dimensions (e.g., tab switch)
                 if (containerWidth <= 0 || containerHeight <= 0) {
+                    logDebug('resize skipped: container has zero size', {
+                        containerWidth,
+                        containerHeight,
+                    });
                     return;
                 }
 
@@ -775,24 +808,49 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 // causing bbox position misalignment on subsequent fit() calls.
                 const currentGeometry = canvasInstance.geometry;
                 if (!currentGeometry || currentGeometry.image.width <= 0 || currentGeometry.image.height <= 0) {
+                    logDebug('resize skipped: geometry not ready', {
+                        imageWidth: currentGeometry?.image.width,
+                        imageHeight: currentGeometry?.image.height,
+                    });
                     return;
                 }
 
                 if (viewportLockedRef.current) {
                     if (currentGeometry.canvas.width === containerWidth &&
                         currentGeometry.canvas.height === containerHeight) {
+                        logDebug('resize skipped: container unchanged', {
+                            canvasWidth: currentGeometry.canvas.width,
+                            canvasHeight: currentGeometry.canvas.height,
+                        });
                         return;
                     }
                 }
 
+                logDebug('resize applying fitCanvas', {
+                    containerWidth,
+                    containerHeight,
+                });
+
+                // Capture old container size before updating
+                const oldSize = prevContainerSizeRef.current;
+
                 canvasInstance.fitCanvas(containerWidth, containerHeight);
 
-                // Keep SVG viewport in sync with new canvas dimensions.
-                // Only call fit() when NOT zoomed - if zoomed, the existing viewport
-                // is correct and fit() would reset it, causing a visual shape jump.
-                if (zoomLevelRef.current <= 1.0) {
-                    canvasInstance.fit();
+                // Always call fit() to keep SVG viewport geometry in sync.
+                // CSS zoom transform is additive on top of this baseline.
+                canvasInstance.fit();
+
+                // When zoomed, notify parent so it can adjust CSS translate
+                // to maintain the same content center after resize.
+                if (zoomLevelRef.current > 1.0 && oldSize && onContainerResizeRef.current) {
+                    onContainerResizeRef.current(
+                        oldSize.width, oldSize.height,
+                        containerWidth, containerHeight,
+                    );
                 }
+
+                // Update tracked container size
+                prevContainerSizeRef.current = { width: containerWidth, height: containerHeight };
 
                 // Re-lock viewport after updating
                 if (typeof (canvasInstance as any).lockViewport === 'function') {
@@ -848,6 +906,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // This avoids transient videoWidth/videoHeight values during initial decode.
         const stableVideoDims = getStableVideoDims();
         if (!stableVideoDims) {
+            logDebug('setup skipped: video dims not stable', {
+                frame: frameNumber,
+                viewId: activeViewId,
+            });
             return;
         }
 
@@ -872,6 +934,13 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             stableVideoDims.width,
             stableVideoDims.height,
         );
+        logDebug('transform computed', {
+            taskWidth: frameData?.width,
+            taskHeight: frameData?.height,
+            videoWidth: stableVideoDims.width,
+            videoHeight: stableVideoDims.height,
+            canvasHeight: transformResult?.transform.canvasHeight,
+        });
 
         // Store transform params for coordinate transformation on annotation save
         if (transformResult) {
@@ -899,12 +968,25 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             curZLayer,
             viewChanged,
             isInitialSetup,
-            zoomLevel: zoomLevelRef.current,
             onViewportLocked: () => {
                 viewportLockedRef.current = true;
             },
         });
+        logDebug('setup completed', {
+            frame: frameNumber,
+            viewId: activeViewId,
+            viewChanged,
+            isInitialSetup,
+        });
         setupCompletedRef.current = true;
+
+        // Initialize container size tracking for resize-while-zoomed detection
+        if (canvasContainer) {
+            prevContainerSizeRef.current = {
+                width: canvasContainer.clientWidth,
+                height: canvasContainer.clientHeight,
+            };
+        }
 
         // Always update prevSetupViewIdRef after processing
         prevSetupViewIdRef.current = activeViewId;

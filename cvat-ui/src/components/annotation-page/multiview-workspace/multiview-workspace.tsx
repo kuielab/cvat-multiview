@@ -400,6 +400,22 @@ export default function MultiviewWorkspace(): JSX.Element {
         setZoomState({ level: 1.0, translateX: 0, translateY: 0 });
     }, []);
 
+    // Handle container resize while zoomed - adjust CSS translate to maintain content center
+    const handleContainerResize = useCallback((
+        oldW: number, oldH: number, newW: number, newH: number,
+    ): void => {
+        setZoomState((prev) => {
+            if (prev.level <= 1.0) return prev;
+            const centerX = (oldW / 2 - prev.translateX) / prev.level;
+            const centerY = (oldH / 2 - prev.translateY) / prev.level;
+            return {
+                ...prev,
+                translateX: newW / 2 - centerX * prev.level,
+                translateY: newH / 2 - centerY * prev.level,
+            };
+        });
+    }, []);
+
     // Handle canvas container ready callback from active view
     const handleCanvasContainerReady = useCallback((
         container: HTMLDivElement | null,
@@ -454,6 +470,7 @@ export default function MultiviewWorkspace(): JSX.Element {
                 activeViewId={activeView}
                 onZoom={handleZoom}
                 zoomLevel={zoomState.level}
+                onContainerResize={handleContainerResize}
             />
         </Layout>
     );
