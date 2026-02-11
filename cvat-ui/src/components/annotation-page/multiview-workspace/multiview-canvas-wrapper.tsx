@@ -133,8 +133,10 @@ function prepareDisplayAnnotations(params: {
         if (ann.points && Array.isArray(ann.points)) {
             const transformedPoints = transformPointsForDisplay(
                 ann.points,
+                transform.canvasWidth,
                 transform.canvasHeight,
                 transform.taskHeight,
+                transform.taskWidth,
             );
             return cloneObjectStateForDisplay(ann, transformedPoints);
         }
@@ -206,6 +208,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         multiviewData,
         samplesRequired: STABLE_VIDEO_SAMPLES_REQUIRED,
         maxWaitMs: STABLE_VIDEO_MAX_WAIT_MS,
+        allowTimeoutFallback: false,
         debug: debugMultiview,
     });
 
@@ -313,13 +316,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             // Pre-clamp in canvas space to prevent shrinkage from aspect ratio mismatch
             state.points = clampPointsToCanvasBounds(
                 state.points,
-                transformParams.taskWidth,
+                transformParams.canvasWidth,
                 transformParams.canvasHeight,
             );
             state.points = transformPointsForStorage(
                 state.points,
+                transformParams.canvasWidth,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
+                transformParams.taskWidth,
             );
 
             // Normalize and enforce minimum dimensions in task space for new shapes
@@ -595,14 +600,16 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             if (!rotation) {
                 updatedPoints = clampPointsToCanvasBounds(
                     updatedPoints,
-                    transformParams.taskWidth,
+                    transformParams.canvasWidth,
                     transformParams.canvasHeight,
                 );
             }
             updatedPoints = transformPointsForStorage(
                 updatedPoints,
+                transformParams.canvasWidth,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
+                transformParams.taskWidth,
             );
 
             // Normalize and enforce minimum dimensions in task space.
@@ -905,6 +912,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     useEffect(() => {
         if (!canvasInstance || !frameData || !mountedRef.current) {
             return;
+        }
+
+        if (canvasContainer) {
+            const w = canvasContainer.clientWidth;
+            const h = canvasContainer.clientHeight;
+            if (w <= 0 || h <= 0) {
+                logDebug('setup skipped: container has zero size', { w, h });
+                return;
+            }
         }
 
         // Do not run setup until video dimensions are stable across samples.
