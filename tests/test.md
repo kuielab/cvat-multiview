@@ -12,8 +12,8 @@ while moving toward canvas-based rendering for all views.
 
 Run all tests in both modes:
 
-- Overlay mode (default): current `<video>` + canvas overlay
-- Canvas render mode: set `window.CVAT_MULTIVIEW_CANVAS_RENDER = true`
+- Canvas render mode (default): canvas-only rendering
+- Overlay mode: removed (ensure no `<video>` elements are rendered)
 
 ## Functional Tests (Manual or E2E)
 
@@ -55,21 +55,87 @@ Run all tests in both modes:
    - Collapse/expand sidebars and resize window.
    - Pass: bbox alignment stable; no jump on resize.
 
+
+9. No HTMLVideoElement
+   - Open a multiview job.
+   - Inspect DOM for `.multiview-video` elements.
+   - Pass: none are rendered in multiview workspace.
+
+10. Canvas-Only Zoom/Pan
+   - Zoom with wheel and pan with middle/right/Alt-drag.
+   - Pass: no CSS transform on `.zoom-wrapper`; zoom/pan is canvas-driven.
+
+
+11. Playback Rate Effect
+   - Set playback rate to 2x.
+   - Play for 5 seconds.
+   - Pass: frameNumber advances ~2x faster than 1x.
+
+
+12. Edge Alignment (No Letterbox)
+   - Draw bbox touching exact image edges (top-left and bottom-right).
+   - Save and refresh.
+   - Pass: bbox still touches edges with no margin/offset.
+
+13. Mixed-Resolution Views
+   - Use a multiview task where view sizes differ (e.g., 1920x1080 and 1280x720).
+   - Draw a bbox in View 2 near an image edge.
+   - Save and refresh.
+   - Pass: bbox aligns to the same pixels in View 2; no drift vs. edge.
+
+14. Per-View Dimension Source of Truth
+   - Open devtools and inspect `state.annotation.multiviewData`.
+   - Confirm each view has `width`/`height` and `fps`.
+   - Draw a bbox at the right/bottom edge in a non-View1 camera.
+   - Pass: bbox edge aligns with image edge after refresh.
+
+15. Chunk Decode Network Path
+   - Open devtools Network tab.
+   - Play 3-5 seconds.
+   - Pass: requests include `/multiview/data/{view_id}?type=chunk&index=`.
+
+16. Frame Step / Skip Frame
+   - Use a job with frameStep > 1.
+   - Play and seek across frames.
+   - Pass: frameNumber advances by step, bbox stays aligned.
+
+17. Playback End Boundary
+   - Play until the last frame.
+   - Pass: playback stops at stopFrame and does not advance.
+
+18. View Switch During Playback
+   - Start playback and switch active view.
+   - Pass: playback stays in sync, draw mode not stuck.
+
+19. Zoom Reset on View Change
+   - Zoom in on View A, switch to View B, then back to View A.
+   - Pass: zoom state resets to fit; bbox alignment preserved.
+
+20. Chunk Decode Failure Handling
+   - Simulate a transient network error for chunk requests.
+   - Pass: error is handled gracefully; frame loads on retry.
+
 ## Spectrogram Tests
 
 1. Generate Spectrogram
    - Click ¡°Generate Spectrogram.¡±
    - Pass: completes without error.
 
-2. Spectrogram Seek (Paused)
+2. Spectrogram Without DOM Video
+   - Confirm DOM has no `<video>` elements in multiview.
+   - Generate spectrogram.
+   - Pass: uses metadata URLs and completes without error.
+
+
+3. Spectrogram Seek (Paused)
    - Click in spectrogram while paused.
    - Pass: frame jumps to expected time.
 
-3. Spectrogram Seek (Playing)
+4. Spectrogram Seek (Playing)
    - While playing, click spectrogram.
    - Pass: pauses, seeks, resumes correctly.
 
-4. Playhead Sync
+5. Playhead Sync
    - During playback, confirm playhead tracks frame time.
    - Pass: playhead moves smoothly with playback.
 
@@ -94,6 +160,16 @@ Run all tests in both modes:
    - Rotate a bbox if supported.
    - Refresh.
    - Pass: rotation and position persist.
+
+5. Non-Rectangle Shapes
+   - Create polygon/polyline/points (if enabled).
+   - Save and refresh.
+   - Pass: shape vertices remain aligned.
+
+6. Visibility Flags
+   - Toggle occluded/outside/hidden states.
+   - Save and refresh.
+   - Pass: visibility states persist and render correctly.
 
 ## Regression Tests (Existing)
 
@@ -151,3 +227,10 @@ Run all tests in both modes:
 - All multiview-specific features (spectrogram, zoom/pan, auto-pause) behave identically
 - Multiview frame endpoint returns frames without errors under stress
 - `multiview_data` fps present and used for playback timing
+
+
+## Canvas-Only Regression
+
+1. Overlay Mode Removal
+   - Confirm there is no fallback to `<video>` elements.
+   - Pass: multiview renders entirely via canvas.

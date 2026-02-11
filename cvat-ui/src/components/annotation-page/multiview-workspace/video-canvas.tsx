@@ -2,89 +2,25 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useRef, useEffect, useCallback, useState } from 'react';
-import { ZoomState } from './multiview-workspace';
+import React, { useRef, useEffect, useCallback } from 'react';
 import MultiviewCanvasPreview from './multiview-canvas-preview';
-
-interface VideoDisplayArea {
-    width: number;
-    height: number;
-    offsetX: number;
-    offsetY: number;
-}
 
 interface Props {
     viewId: number;
-    frameNumber: number;
-    videoUrl: string;
-    fps: number;
     isActive: boolean;
-    playing: boolean;
-    playbackRate?: number;
-    onCanvasContainerReady?: (container: HTMLDivElement | null, videoElement: HTMLVideoElement | null) => void;
-    onVideoRef?: (viewId: number, video: HTMLVideoElement | null) => void;
-    zoomState?: ZoomState;
+    onCanvasContainerReady?: (container: HTMLDivElement | null) => void;
     onPan?: (dx: number, dy: number) => void;
     onZoomReset?: () => void;
-    renderMode?: 'video' | 'canvas';
-}
-
-/**
- * Calculate the actual display area of a video with object-fit: contain
- * This accounts for letterboxing (black bars) when the video aspect ratio
- * doesn't match the container aspect ratio.
- */
-function calculateVideoDisplayArea(
-    containerWidth: number,
-    containerHeight: number,
-    videoWidth: number,
-    videoHeight: number,
-): VideoDisplayArea {
-    if (containerWidth <= 0 || containerHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) {
-        return { width: containerWidth, height: containerHeight, offsetX: 0, offsetY: 0 };
-    }
-
-    const containerAspect = containerWidth / containerHeight;
-    const videoAspect = videoWidth / videoHeight;
-
-    let displayWidth: number;
-    let displayHeight: number;
-    let offsetX: number;
-    let offsetY: number;
-
-    if (containerAspect > videoAspect) {
-        // Container is wider than video - letterbox on left/right
-        displayHeight = containerHeight;
-        displayWidth = displayHeight * videoAspect;
-        offsetX = (containerWidth - displayWidth) / 2;
-        offsetY = 0;
-    } else {
-        // Container is taller than video - letterbox on top/bottom
-        displayWidth = containerWidth;
-        displayHeight = displayWidth / videoAspect;
-        offsetX = 0;
-        offsetY = (containerHeight - displayHeight) / 2;
-    }
-
-    return { width: displayWidth, height: displayHeight, offsetX, offsetY };
 }
 
 export default function VideoCanvas(props: Props): JSX.Element {
     const {
-        viewId, frameNumber, videoUrl, fps, isActive, playing, playbackRate,
-        onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset, renderMode = 'video',
+        viewId, isActive,
+        onCanvasContainerReady, onPan, onZoomReset,
     } = props;
 
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const [videoElementState, setVideoElementState] = useState<HTMLVideoElement | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const previewContainerRef = useRef<HTMLDivElement>(null);
-    const [videoDisplayArea, setVideoDisplayArea] = useState<VideoDisplayArea | null>(null);
-
-    // Ref for zoomState to avoid re-registering event listeners on every zoom change.
-    // Sync assignment (not useEffect) guarantees the ref is current before any handler fires.
-    const zoomStateRef = useRef(zoomState);
-    zoomStateRef.current = zoomState;
 
     // Pan state for panning when zoomed in
     const isPanningRef = useRef(false);
@@ -92,121 +28,21 @@ export default function VideoCanvas(props: Props): JSX.Element {
     // Track actual pan distance to suppress click events after left-click pan
     const panDistanceRef = useRef(0);
 
-    // Use callback ref to report video element to parent when mounted
-    const videoCallbackRef = useCallback((node: HTMLVideoElement | null) => {
-        (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = node;
-        setVideoElementState(node);
-        if (onVideoRef) {
-            onVideoRef(viewId, node);
-        }
-    }, [viewId, onVideoRef]);
-
-    // Use callback ref to notify parent when DOM element is ready AND video metadata is loaded
-    // Fix 3: Wait for video metadata to be loaded before calling callback
-    // This ensures videoDimensions will be valid when canvas setup runs
+    // Notify parent when the canvas container is ready.
     const canvasContainerCallbackRef = useCallback((node: HTMLDivElement | null) => {
         if (!onCanvasContainerReady) return;
 
-        if (renderMode === 'canvas') {
-            onCanvasContainerReady(node, null);
-            return;
-        }
-
-        const video = videoRef.current;
-
-        // If node is null (unmounting) or video is null, call callback immediately
-        if (!node || !video) {
-            onCanvasContainerReady(node, video);
-            return;
-        }
-
-        // Check if first frame already decoded (stable dimensions)
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
-            // First frame already decoded - call callback immediately
-            onCanvasContainerReady(node, video);
-        } else {
-            // Wait for first frame decode ('loadeddata') instead of just metadata.
-            // 'loadedmetadata' fires when headers are parsed but dimensions may not
-            // be fully stable yet (codec initialization). 'loadeddata' fires after
-            // the first frame is actually decoded, guaranteeing stable videoWidth/Height.
-            const handleDataLoaded = (): void => {
-                video.removeEventListener('loadeddata', handleDataLoaded);
-                onCanvasContainerReady(node, video);
-            };
-            video.addEventListener('loadeddata', handleDataLoaded);
-        }
-    }, [onCanvasContainerReady, renderMode, viewId]);
+        onCanvasContainerReady(node);
+    }, [onCanvasContainerReady]);
 
     // Cleanup when becoming inactive
     useEffect(() => {
         if (!isActive && onCanvasContainerReady) {
-            onCanvasContainerReady(null, null);
+            onCanvasContainerReady(null);
         }
     }, [isActive, onCanvasContainerReady]);
 
-    useEffect(() => {
-        if (renderMode !== 'video' && onVideoRef) {
-            onVideoRef(viewId, null);
-        }
-        if (renderMode !== 'video') {
-            setVideoElementState(null);
-        }
-    }, [renderMode, onVideoRef, viewId]);
-
-    /**
-     * Calculate video display area when:
-     * - Video metadata loads (provides video dimensions)
-     * - Container resizes
-     */
-    useEffect(() => {
-        if (renderMode !== 'video') return undefined;
-
-        const video = videoRef.current;
-        const container = containerRef.current;
-
-        if (!video || !container) return;
-
-        const updateDisplayArea = (): void => {
-            const containerRect = container.getBoundingClientRect();
-
-            // Use actual video dimensions for overlay positioning
-            const width = video.videoWidth;
-            const height = video.videoHeight;
-
-            if (width > 0 && height > 0) {
-                const displayArea = calculateVideoDisplayArea(
-                    containerRect.width,
-                    containerRect.height,
-                    width,
-                    height,
-                );
-                setVideoDisplayArea(displayArea);
-            }
-        };
-
-        // Update when video metadata loads
-        const handleLoadedMetadata = (): void => {
-            updateDisplayArea();
-        };
-
-        // Update on resize
-        const resizeObserver = new ResizeObserver(() => {
-            updateDisplayArea();
-        });
-
-        video.addEventListener('loadedmetadata', handleLoadedMetadata);
-        resizeObserver.observe(container);
-
-        // Initial calculation if video metadata already available
-        if (video.videoWidth > 0 && video.videoHeight > 0) {
-            updateDisplayArea();
-        }
-
-        return () => {
-            video.removeEventListener('loadedmetadata', handleLoadedMetadata);
-            resizeObserver.disconnect();
-        };
-    }, [videoUrl, renderMode]);
+    // No HTMLVideoElement rendering in canvas-only mode.
 
     /**
      * Pan support when zoomed in.
@@ -219,10 +55,6 @@ export default function VideoCanvas(props: Props): JSX.Element {
         if (!container || !isActive) return undefined;
 
         const handleMouseDown = (e: MouseEvent): void => {
-            const currentZoom = zoomStateRef.current;
-            const allowPan = renderMode === 'canvas' || (currentZoom && currentZoom.level > 1.0);
-            if (!allowPan) return;
-
             // Middle button (1), Right button (2), Alt+Left (0) - pan when zoomed
             if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
                 e.preventDefault();
@@ -261,11 +93,8 @@ export default function VideoCanvas(props: Props): JSX.Element {
         // Use capture phase + stopPropagation to prevent CVAT's CanvasContextMenuContainer
         // from opening on right-click release.
         const handleContextMenu = (e: MouseEvent): void => {
-            const currentZoom = zoomStateRef.current;
-            if (currentZoom && currentZoom.level > 1.0) {
-                e.preventDefault();
-                e.stopPropagation();
-            }
+            e.preventDefault();
+            e.stopPropagation();
         };
 
         // Use capture phase so pan intercepts before canvas sees events
@@ -282,62 +111,35 @@ export default function VideoCanvas(props: Props): JSX.Element {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-        }, [isActive, onPan, renderMode]);
+        }, [isActive, onPan]);
 
     /**
      * Double-click to reset zoom (only when zoomed in).
      */
     const handleDoubleClick = useCallback((e: React.MouseEvent): void => {
-        const currentZoom = zoomStateRef.current;
-        if (currentZoom && currentZoom.level > 1.0 && onZoomReset) {
-            e.preventDefault();
-            e.stopPropagation();
-            onZoomReset();
-        }
+        if (!onZoomReset) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onZoomReset();
     }, [onZoomReset]);
 
     // ALL video control (play/pause/seek) is handled by parent component
     // This component only renders the video element
 
-    const useCanvasRender = renderMode === 'canvas';
-    const showPreview = renderMode === 'canvas' && !isActive;
+    const showPreview = !isActive;
 
     // Calculate inline styles for canvas overlay.
     // In canvas render mode (active view), use full container size to avoid letterboxing logic.
-    const canvasOverlayStyle: React.CSSProperties = useCanvasRender ? {
+    const canvasOverlayStyle: React.CSSProperties = {
         position: 'absolute',
         left: 0,
         top: 0,
         width: '100%',
         height: '100%',
-    } : (videoDisplayArea ? {
-        position: 'absolute',
-        left: `${videoDisplayArea.offsetX}px`,
-        top: `${videoDisplayArea.offsetY}px`,
-        width: `${videoDisplayArea.width}px`,
-        height: `${videoDisplayArea.height}px`,
-    } : {
-        // Fallback to full container if display area not calculated yet
-        position: 'absolute',
-        left: 0,
-        top: 0,
-        width: '100%',
-        height: '100%',
-    });
-
-    const videoStyle: React.CSSProperties = useCanvasRender ? {
-        opacity: 0,
-        position: 'absolute',
-        left: 0,
-        top: 0,
-        width: '100%',
-        height: '100%',
-        pointerEvents: 'none',
-    } : {};
+    };
 
     // CSS transform for zoom: translate then scale from origin (0,0).
     // Disabled in canvas render mode (canvas handles zoom/pan directly).
-    const zoomLevel = renderMode === 'canvas' ? 1.0 : (zoomState?.level ?? 1.0);
     const zoomWrapperStyle: React.CSSProperties = {
         width: '100%',
         height: '100%',
@@ -345,27 +147,11 @@ export default function VideoCanvas(props: Props): JSX.Element {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        transformOrigin: '0 0',
-        transform: zoomLevel > 1.0
-            ? `translate(${zoomState!.translateX}px, ${zoomState!.translateY}px) scale(${zoomLevel})`
-            : 'none',
-        willChange: zoomLevel > 1.0 ? 'transform' : 'auto',
     };
 
     return (
         <div ref={containerRef} className='video-canvas-container' onDoubleClick={handleDoubleClick}>
             <div className='zoom-wrapper' style={zoomWrapperStyle}>
-                {renderMode === 'video' && (
-                    <video
-                        ref={videoCallbackRef}
-                        src={videoUrl}
-                        className='multiview-video'
-                        playsInline
-                        crossOrigin="anonymous"
-                        muted={!isActive}
-                        style={videoStyle}
-                    />
-                )}
                 {isActive && (
                     <div
                         ref={canvasContainerCallbackRef}
@@ -383,7 +169,6 @@ export default function VideoCanvas(props: Props): JSX.Element {
                 {showPreview && (
                     <MultiviewCanvasPreview
                         container={previewContainerRef.current}
-                        videoElement={videoElementState}
                         viewId={viewId}
                     />
                 )}
@@ -392,11 +177,6 @@ export default function VideoCanvas(props: Props): JSX.Element {
                 View {viewId}
                 {isActive && <span className='active-indicator'> (Active)</span>}
             </div>
-            {isActive && zoomLevel > 1.0 && (
-                <div className='zoom-indicator'>
-                    {Math.round(zoomLevel * 100)}%
-                </div>
-            )}
         </div>
     );
 }

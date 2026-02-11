@@ -40,6 +40,7 @@ import AboutData from './about';
 import QualityConflict, { ConflictSeverity } from './quality-conflict';
 import QualitySettings from './quality-settings';
 import { getFramesMeta } from './frames';
+import { getMultiviewFrame, getMultiviewFramesMeta } from './multiview-frames';
 import ConsensusSettings from './consensus-settings';
 import {
     callAction, listActions, registerAction, unregisterAction, runAction,
@@ -582,6 +583,21 @@ export default function implementAPI(cvat: CVATCore): CVATCore {
     });
     implementationMixin(cvat.frames.getMeta, async (type: 'job' | 'task', id: number) => {
         const result = await getFramesMeta(type, id);
+        return result;
+    });
+    implementationMixin(cvat.multiviewFrames.getMeta, async (taskId: number, viewId: number) => {
+        const result = await getMultiviewFramesMeta(taskId, viewId);
+        return result;
+    });
+    implementationMixin(cvat.multiviewFrames.getFrame, async (params: {
+        taskId: number;
+        viewId: number;
+        frameNumber: number;
+        jobStartFrame: number;
+        isPlaying: boolean;
+        step: number;
+    }) => {
+        const result = await getMultiviewFrame(params);
         return result;
     });
 

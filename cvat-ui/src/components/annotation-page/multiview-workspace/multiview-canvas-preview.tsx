@@ -9,22 +9,16 @@ import { Canvas } from 'cvat-canvas-wrapper';
 import { CombinedState, Workspace } from 'reducers';
 import { ObjectState, ObjectType } from 'cvat-core-wrapper';
 import { filterAnnotations } from 'utils/filter-annotations';
-import {
-    createVideoProportionalFrameData,
-    transformPointsForDisplay,
-    cloneObjectStateForDisplay,
-} from './multiview-canvas-utils';
-import { useStableVideoDims } from './use-stable-video-dims';
+import { cloneObjectStateForDisplay } from './multiview-canvas-utils';
 import { fetchMultiviewFrameImage } from './multiview-frame-provider';
 
 interface Props {
     container: HTMLDivElement | null;
-    videoElement: HTMLVideoElement | null;
     viewId: number;
 }
 
 export default function MultiviewCanvasPreview(props: Props): JSX.Element | null {
-    const { container, videoElement, viewId } = props;
+    const { container, viewId } = props;
     const canvasRef = useRef<Canvas | null>(null);
 
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
@@ -32,17 +26,8 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
     const annotations = useSelector((state: CombinedState) => state.annotation.annotations.states);
     const curZLayer = useSelector((state: CombinedState) => state.annotation.annotations.zLayer.cur);
     const workspace = useSelector((state: CombinedState) => state.annotation.workspace);
-    const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
     const jobInstance = useSelector((state: CombinedState) => state.annotation.job.instance);
-
-    const { getStableVideoDims, version: videoDimsVersion } = useStableVideoDims({
-        videoElement,
-        activeViewId: viewId,
-        multiviewData,
-        samplesRequired: 2,
-        maxWaitMs: 1200,
-        allowTimeoutFallback: false,
-    });
+    const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
     useEffect(() => {
         if (!container) return undefined;
@@ -77,15 +62,6 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
         const canvasInstance = canvasRef.current;
         if (!canvasInstance || !container || !frameData) return;
 
-        const stableVideoDims = getStableVideoDims();
-        if (!stableVideoDims) return;
-
-        const transformResult = createVideoProportionalFrameData(
-            frameData,
-            stableVideoDims.width,
-            stableVideoDims.height,
-        );
-
         const filtered = filterAnnotations(annotations, {
             frame: frameNumber,
             workspace,
@@ -98,27 +74,19 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
             return stateViewId === viewId;
         });
 
-        let displayAnnotations = filtered;
-        if (transformResult) {
-            displayAnnotations = filtered.map((ann: any) => {
-                if (ann.points && Array.isArray(ann.points)) {
-                    const transformedPoints = transformPointsForDisplay(
-                        ann.points,
-                        transformResult.transform.canvasWidth,
-                        transformResult.transform.canvasHeight,
-                        transformResult.transform.taskHeight,
-                        transformResult.transform.taskWidth,
-                    );
-                    return cloneObjectStateForDisplay(ann, transformedPoints);
-                }
-                return ann;
-            });
-        }
+        const displayAnnotations = filtered.map((ann: any) => (
+            ann.points && Array.isArray(ann.points) ?
+                cloneObjectStateForDisplay(ann, ann.points) : ann
+        ));
 
-        let effectiveFrameData = transformResult ? transformResult.frameData : frameData;
+        let effectiveFrameData = frameData;
         const taskId = jobInstance?.taskId ?? null;
-        const renderWidth = stableVideoDims.width;
-        const renderHeight = stableVideoDims.height;
+        const viewKey = `view${viewId}`;
+        const viewData = multiviewData?.videos?.[viewKey];
+        const renderWidth = viewData?.width || frameData.width;
+        const renderHeight = viewData?.height || frameData.height;
+        const jobStartFrame = jobInstance?.startFrame || 0;
+        const step = (jobInstance as any)?.frameStep || 1;
         effectiveFrameData = new Proxy(effectiveFrameData, {
             get(target, prop, receiver) {
                 if (prop === 'width') {
@@ -135,8 +103,9 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
                                     taskId,
                                     viewId,
                                     frameNumber: target.number,
-                                    renderWidthFallback: renderWidth,
-                                    renderHeightFallback: renderHeight,
+                                    jobStartFrame,
+                                    isPlaying: false,
+                                    step,
                                 });
                             } catch (error) {
                                 return target.data(...args);
@@ -160,9 +129,8 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
         curZLayer,
         workspace,
         viewId,
-        videoDimsVersion,
-        getStableVideoDims,
         jobInstance,
+        multiviewData,
     ]);
 
     return null;

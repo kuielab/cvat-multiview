@@ -36,12 +36,11 @@ image directly from frameData, keeping a single authoritative coordinate system.
 
 ### 1) Metadata-First Dimension Selection
 
-- The stable dimension hook now prioritizes backend metadata and uses video
-  element dimensions only as fallback.
-- This reduces session-to-session drift caused by video decoding variability.
+- Removed the video-dimension sampling hook and all HTMLVideoElement dependencies.
+- Multiview now uses backend metadata as the sole dimension source.
+- This removes session-to-session drift caused by video decoding variability.
 
 Files:
-- `cvat-ui/src/components/annotation-page/multiview-workspace/use-stable-video-dims.ts`
 - `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
 
 ### 2) X-Axis and Y-Axis Scaling
@@ -54,13 +53,23 @@ Files:
 - `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-utils.ts`
 - `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
 
-### 3) Stability Gating (No Timeout Acceptance by Default)
+### 2.5) Per-View Dimension Source of Truth
 
-- Setup now waits for confirmed stable samples or valid metadata.
-- Timeout fallback is disabled unless explicitly enabled.
+- Active view width/height now comes from `multiview_data` per-view metadata.
+- FrameData width/height is overridden per view to match actual view resolution.
+- Clamp/normalize logic uses per-view dimensions to avoid drift on mixed-res views.
 
 Files:
-- `cvat-ui/src/components/annotation-page/multiview-workspace/use-stable-video-dims.ts`
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
+- `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-preview.tsx`
+
+### 3) Stability Gating (No Timeout Acceptance by Default)
+
+- Canvas setup is now gated by frame data readiness and container sizing,
+  without any timeout-based fallback.
+- ResizeObserver re-fit logic is guarded to avoid stale geometry.
+
+Files:
 - `cvat-ui/src/components/annotation-page/multiview-workspace/multiview-canvas-wrapper.tsx`
 
 ## Optional Future Refactor (Bigger Change)
@@ -82,6 +91,7 @@ changed or re-validated if we move to a "canvas-renders-video per view" design.
 1. Frame Image Delivery
    - Provide per-view frame images or a decode endpoint that can be drawn onto canvas.
    - Implemented: `/api/tasks/{id}/multiview/frame/{view_id}?number=...` returning PNG frames.
+   - Implemented: `/api/tasks/{id}/multiview/data/{view_id}?type=chunk` for chunk-based decode.
    - Decide on format and performance strategy:
      - PNG/JPEG frames
      - WebP frames
@@ -97,12 +107,14 @@ changed or re-validated if we move to a "canvas-renders-video per view" design.
    - If using frame endpoints, design cache policies for repeated frames.
    - Verify API request rate limits for multi-view access patterns.
    - Implemented: in-memory LRU cache for multiview frame PNG responses.
+   - Implemented: multiview chunks decoded client-side via cvat-core multiview frames cache.
 
 ### B. Frontend Rendering Pipeline
 
 1. Remove HTMLVideoElement Rendering
    - Replace `<video>` elements with a canvas-only rendering path.
    - Remove object-fit letterboxing logic and overlay alignment hacks.
+   - Implemented: multiview now renders canvas-only (no `<video>` elements).
 
 2. Canvas Setup and Viewport Sync
    - Use standard CVAT ordering:
@@ -112,15 +124,18 @@ changed or re-validated if we move to a "canvas-renders-video per view" design.
 3. Coordinate Transform
    - If canvas renders frames directly, remove multiview-specific transforms.
    - If transforms remain, keep both X and Y scaling in a single canonical transform.
+   - Implemented: multiview-specific transforms removed; frameData coords are authoritative.
 
 4. Playback Engine
    - Replace video-based time control with a canvas frame clock.
    - Keep frames across views in exact sync.
    - Ensure frame number -> timestamp is stable.
+   - Implemented: playback uses canvas clock only.
 
 5. Zoom and Pan
    - Use canvas-native zoom/pan (or one unified transform only).
    - Remove CSS zoom wrapper and related event interception.
+   - Implemented: CSS zoom removed; canvas zoom/pan only.
 
 ### C. Annotation Behavior Impacts
 
@@ -170,6 +185,9 @@ changed or re-validated if we move to a "canvas-renders-video per view" design.
 
 3. Fallback Path
    - Provide an option to revert to HTMLVideoElement overlay if instability is found.
+
+Status:
+- Not implemented. Requires a runtime switch and parallel code paths.
 
 ## Behavior Impact Analysis
 
@@ -251,17 +269,17 @@ This section tells you what must be replaced or preserved for each feature.
    - Risk: double scaling or mismatch in event coordinates.
 
 4. Spectrogram
-   - Current: uses `.multiview-video` sources for decode.
-   - Refactor: ensure audio source remains accessible without video tag.
-   - Risk: loss of audio extraction pipeline if video tag is removed.
+   - Current: uses metadata URLs and `fetchAndDecodeAudio()` (no DOM video).
+   - Refactor: keep metadata URLs available for all views.
+   - Risk: missing URLs in multiview metadata breaks spectrogram.
 
 5. Draw Mode Auto-Pause
    - Current: relies on Redux `activeControl`.
    - Refactor: must keep activeControl transitions intact.
 
 6. Active View Audio
-   - Current: mute all except active view.
-   - Refactor: if no video tag, use audio engine routing to isolate active view.
+   - Current: no DOM video playback, so no per-view audio output path.
+   - Refactor: if audio playback is required, add an explicit audio routing policy.
 
 7. Objects Sidebar
    - Current: viewId filtering in `multiview-canvas-wrapper` and objects list.
