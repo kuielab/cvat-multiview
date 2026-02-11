@@ -425,6 +425,36 @@ export default function MultiviewWorkspace(): JSX.Element {
         setVideoElement(video);
     }, []);
 
+    useEffect(() => {
+        if (renderMode !== 'canvas') return;
+
+        let instance = canvasInstancesRef.current.get(activeView);
+        if (!instance) {
+            instance = new Canvas();
+            canvasInstancesRef.current.set(activeView, instance);
+        }
+
+        dispatch(setCanvasInstance(instance));
+        dispatch(updateActiveControlAction(ActiveControl.CURSOR));
+        dispatch(updateCanvasContextMenu(false, 0, 0));
+    }, [activeView, dispatch, renderMode]);
+
+    useEffect(() => {
+        return () => {
+            canvasInstancesRef.current.forEach((instance) => instance.destroy());
+            canvasInstancesRef.current.clear();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (renderMode !== 'canvas' || !canvasInstance) return;
+        try {
+            canvasInstance.cancel();
+        } catch {
+            // Ignore if canvas is not in a cancelable state
+        }
+    }, [canvasInstance, renderMode, activeView]);
+
     return (
         <Layout hasSider className='cvat-multiview-workspace'>
             <ControlsSideBarContainer />
