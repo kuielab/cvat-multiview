@@ -118,6 +118,20 @@ Run all tests in both modes:
 2. Memory/CPU Observation
    - During playback, confirm no runaway memory usage.
 
+3. Frame Endpoint Hot Cache
+   - In canvas render mode, stay on a single frame.
+   - Refresh the same frame 20+ times (e.g., toggle views without changing frame).
+   - Pass: subsequent loads are faster; no stutter.
+
+4. Frame Endpoint Cold Cache
+   - In canvas render mode, jump to a new frame every time (e.g., +50 frames).
+   - Pass: frames load consistently with no error responses.
+
+5. Frame Endpoint Parallel Stress
+   - Open 5?10 views and play for 30s in canvas mode.
+   - Pass: no major frame drops; server remains stable.
+
+
 ## E2E Automation Candidates (Playwright)
 
 1. Refresh Alignment
@@ -126,9 +140,14 @@ Run all tests in both modes:
 4. Spectrogram Seek
 5. Zoom/Pan in Canvas Mode
 
+6. Frame Endpoint Stability (Repeated Same Frame)
+7. FPS Metadata Consistency (view fps reported in multiview_data)
+
 ## Pass/Fail Criteria Summary
 
 - Alignment drift <= 2px after refresh
 - Views remain synchronized in playback and seeking
 - Draw/edit actions persist after refresh
 - All multiview-specific features (spectrogram, zoom/pan, auto-pause) behave identically
+- Multiview frame endpoint returns frames without errors under stress
+- `multiview_data` fps present and used for playback timing

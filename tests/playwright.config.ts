@@ -8,6 +8,7 @@ export default defineConfig({
     expect: {
         timeout: 15_000,
     },
+    workers: 4,
     use: {
         baseURL,
         headless: true,

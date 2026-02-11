@@ -57,7 +57,7 @@ test.describe('6. Zoom & Pan', () => {
         expect(dy).toBeLessThanOrEqual(5);
     });
 
-    test('double-click resets zoom', async ({ page }) => {
+    test('double-click does not reset zoom (dblclick blocked)', async ({ page }) => {
         await openMultiviewJob(page);
 
         const container = page.locator('.video-canvas-container').first();
@@ -73,12 +73,13 @@ test.describe('6. Zoom & Pan', () => {
         const zoomedScale = await getZoomScale(page);
         expect(zoomedScale).toBeGreaterThan(1);
 
-        // Double-click to reset
+        // Double-click should NOT reset zoom (dblclick is blocked to prevent
+        // canvasView.ts focus()/fit() from corrupting SVG geometry)
         await page.mouse.dblclick(cx, cy);
         await page.waitForTimeout(500);
 
-        const resetScale = await getZoomScale(page);
-        console.log(`Zoom reset: zoomed=${zoomedScale.toFixed(2)}, after dblclick=${resetScale.toFixed(2)}`);
-        expect(resetScale).toBe(1);
+        const afterScale = await getZoomScale(page);
+        console.log(`Zoom dblclick blocked: zoomed=${zoomedScale.toFixed(2)}, after dblclick=${afterScale.toFixed(2)}`);
+        expect(afterScale).toBe(zoomedScale);
     });
 });

@@ -15,6 +15,7 @@ import {
     cloneObjectStateForDisplay,
 } from './multiview-canvas-utils';
 import { useStableVideoDims } from './use-stable-video-dims';
+import { fetchMultiviewFrameImage } from './multiview-frame-provider';
 
 interface Props {
     container: HTMLDivElement | null;
@@ -32,6 +33,7 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
     const curZLayer = useSelector((state: CombinedState) => state.annotation.annotations.zLayer.cur);
     const workspace = useSelector((state: CombinedState) => state.annotation.workspace);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
+    const jobInstance = useSelector((state: CombinedState) => state.annotation.job.instance);
 
     const { getStableVideoDims, version: videoDimsVersion } = useStableVideoDims({
         videoElement,
@@ -56,6 +58,10 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
             container.appendChild(html);
         }
 
+        if (typeof (canvasInstance as any).setViewId === 'function') {
+            (canvasInstance as any).setViewId(viewId);
+        }
+
         canvasInstance.configure({
             forceDisableEditing: true,
         });
@@ -69,7 +75,7 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
 
     useEffect(() => {
         const canvasInstance = canvasRef.current;
-        if (!canvasInstance || !container || !frameData || !videoElement) return;
+        if (!canvasInstance || !container || !frameData) return;
 
         const stableVideoDims = getStableVideoDims();
         if (!stableVideoDims) return;
@@ -110,18 +116,31 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
         }
 
         let effectiveFrameData = transformResult ? transformResult.frameData : frameData;
-        // Render current video frame into canvas
+        const taskId = jobInstance?.taskId ?? null;
+        const renderWidth = stableVideoDims.width;
+        const renderHeight = stableVideoDims.height;
         effectiveFrameData = new Proxy(effectiveFrameData, {
             get(target, prop, receiver) {
+                if (prop === 'width') {
+                    return renderWidth || Reflect.get(target, prop, receiver);
+                }
+                if (prop === 'height') {
+                    return renderHeight || Reflect.get(target, prop, receiver);
+                }
                 if (prop === 'data') {
                     return async (...args: any[]) => {
-                        if (videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
-                            const imageData = await createImageBitmap(videoElement);
-                            return {
-                                renderWidth: videoElement.videoWidth,
-                                renderHeight: videoElement.videoHeight,
-                                imageData,
-                            };
+                        if (taskId) {
+                            try {
+                                return await fetchMultiviewFrameImage({
+                                    taskId,
+                                    viewId,
+                                    frameNumber: target.number,
+                                    renderWidthFallback: renderWidth,
+                                    renderHeightFallback: renderHeight,
+                                });
+                            } catch (error) {
+                                return target.data(...args);
+                            }
                         }
                         return target.data(...args);
                     };
@@ -141,9 +160,9 @@ export default function MultiviewCanvasPreview(props: Props): JSX.Element | null
         curZLayer,
         workspace,
         viewId,
-        videoElement,
         videoDimsVersion,
         getStableVideoDims,
+        jobInstance,
     ]);
 
     return null;

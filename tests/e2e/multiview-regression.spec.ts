@@ -67,4 +67,44 @@ test.describe('Regression Tests', () => {
         const wsSelector = page.locator('text=Multiview').first();
         await expect(wsSelector).toBeVisible();
     });
+
+    test('small shape does not collapse after resize', async ({ page }) => {
+        await openMultiviewJob(page);
+
+        // Select a shape
+        const shape = page.locator('#cvat_canvas_content .cvat_canvas_shape').first();
+        const sBox = await shape.boundingBox();
+        expect(sBox).not.toBeNull();
+
+        await page.mouse.click(sBox!.x + sBox!.width / 2, sBox!.y + sBox!.height / 2);
+        await page.waitForTimeout(500);
+
+        const beforeBox = await shape.boundingBox();
+        expect(beforeBox).not.toBeNull();
+
+        // Try to collapse by dragging bottom-right corner toward top-left
+        const brX = beforeBox!.x + beforeBox!.width;
+        const brY = beforeBox!.y + beforeBox!.height;
+        const tlX = beforeBox!.x + 5;
+        const tlY = beforeBox!.y + 5;
+
+        await page.mouse.move(brX, brY);
+        await page.mouse.down();
+        await page.mouse.move(tlX, tlY, { steps: 10 });
+        await page.mouse.up();
+        await page.waitForTimeout(500);
+
+        const afterBox = await shape.boundingBox();
+        expect(afterBox).not.toBeNull();
+
+        console.log(`Small shape protection: before=${beforeBox!.width.toFixed(0)}x${beforeBox!.height.toFixed(0)}, after=${afterBox!.width.toFixed(0)}x${afterBox!.height.toFixed(0)}`);
+
+        // Shape should still have positive, non-zero dimensions
+        expect(afterBox!.width).toBeGreaterThan(0);
+        expect(afterBox!.height).toBeGreaterThan(0);
+
+        // Undo to restore original shape
+        await page.keyboard.press('Control+z');
+        await page.waitForTimeout(500);
+    });
 });

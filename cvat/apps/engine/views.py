@@ -14,11 +14,13 @@ import textwrap
 import traceback
 import zlib
 from abc import ABCMeta, abstractmethod
+from collections import OrderedDict
 from contextlib import suppress
 from copy import copy
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
+import threading
 
 import django_rq
 from attr.converters import to_bool
@@ -49,6 +51,7 @@ from rq.job import Job as RQJob
 
 import cvat.apps.dataset_manager as dm
 import cvat.apps.dataset_manager.views  # pylint: disable=unused-import
+import cv2
 from cvat.apps.dataset_manager.serializers import DatasetFormatsSerializer
 from cvat.apps.engine import backup
 from cvat.apps.engine.background import BackupImporter, DatasetImporter, TaskCreator
@@ -165,6 +168,14 @@ from .log import ServerLogManager
 slogger = ServerLogManager(__name__)
 
 _UPLOAD_PARSER_CLASSES = api_settings.DEFAULT_PARSER_CLASSES + [MultiPartParser]
+
+_MULTIVIEW_FRAME_CACHE_MAX_ENTRIES = 200
+_MULTIVIEW_FRAME_CACHE_LOCK = threading.Lock()
+_MULTIVIEW_FRAME_CACHE: "OrderedDict[tuple[int, int, int, str], bytes]" = OrderedDict()
+
+_MULTIVIEW_META_CACHE_MAX_ENTRIES = 50
+_MULTIVIEW_META_CACHE_LOCK = threading.Lock()
+_MULTIVIEW_META_CACHE: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
 _DATA_CHECKSUM_HEADER_NAME = 'X-Checksum'
 _DATA_UPDATED_DATE_HEADER_NAME = 'X-Updated-Date'
@@ -1626,6 +1637,22 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
                 'duration': 100.0
             }
 
+    def _get_video_metadata_cached(self, video_path: str) -> dict[str, Any]:
+        with _MULTIVIEW_META_CACHE_LOCK:
+            cached = _MULTIVIEW_META_CACHE.get(video_path)
+            if cached:
+                _MULTIVIEW_META_CACHE.move_to_end(video_path)
+                return cached
+
+        meta = self._extract_video_metadata(video_path)
+
+        with _MULTIVIEW_META_CACHE_LOCK:
+            _MULTIVIEW_META_CACHE[video_path] = meta
+            _MULTIVIEW_META_CACHE.move_to_end(video_path)
+            while len(_MULTIVIEW_META_CACHE) > _MULTIVIEW_META_CACHE_MAX_ENTRIES:
+                _MULTIVIEW_META_CACHE.popitem(last=False)
+        return meta
+
     @extend_schema(
         summary='Create multiview task',
         tags=['tasks'],
@@ -1838,7 +1865,22 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
 
         multiview_data = db_task.data.multiview_data
         serializer = MultiviewDataSerializer(multiview_data)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        payload = serializer.data
+
+        for i in range(1, (multiview_data.view_count or 1) + 1):
+            view_key = f'video_view{i}'
+            video = getattr(multiview_data, view_key, None)
+            if not video:
+                continue
+            try:
+                meta = self._get_video_metadata_cached(video.path)
+                if payload.get(view_key) is not None:
+                    payload[view_key]['fps'] = meta.get('fps', 30.0)
+            except Exception:
+                if payload.get(view_key) is not None:
+                    payload[view_key]['fps'] = 30.0
+
+        return Response(payload, status=status.HTTP_200_OK)
 
     @extend_schema(summary='Serve multiview video', tags=['tasks'])
     @action(detail=True, methods=['GET'], url_path=r'multiview/video/(?P<view_id>(?:[1-9]|10))')
@@ -1898,11 +1940,80 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
             response['Accept-Ranges'] = 'bytes'
             response['Content-Length'] = str(file_size)
             return response
-
-        except models.Task.DoesNotExist:
-            return HttpResponseNotFound('Task not found')
         except Exception as e:
-            return HttpResponse(f'Error serving video: {str(e)}', status=500)
+            return HttpResponse(f'Error serving video: {e}', status=500)
+
+    @extend_schema(
+        summary='Serve multiview frame',
+        tags=['tasks'],
+        parameters=[
+            OpenApiParameter('number', location=OpenApiParameter.QUERY, required=True,
+                type=OpenApiTypes.INT, description="Frame number (0-based)"),
+            OpenApiParameter('quality', location=OpenApiParameter.QUERY, required=False,
+                type=OpenApiTypes.STR, enum=['compressed', 'original'],
+                description="Quality level (currently ignored, PNG is always returned)"),
+        ],
+        responses={
+            '200': OpenApiResponse(description='Multiview frame image (PNG)'),
+        },
+    )
+    @action(detail=True, methods=['GET'], url_path=r'multiview/frame/(?P<view_id>(?:[1-9]|10))')
+    def serve_multiview_frame(self, request: ExtendedRequest, pk: int, view_id: str):
+        """
+        Serve a single frame from a multiview video as a PNG image.
+        """
+        db_task = cast(models.Task, self.get_object())
+
+        if db_task.dimension != models.DimensionType.MULTIVIEW:
+            return HttpResponse('Task is not a multiview task', status=400)
+
+        frame_number = request.query_params.get('number', None)
+        if frame_number is None:
+            return HttpResponseBadRequest('Frame number is required')
+
+        try:
+            frame_number = int(frame_number)
+        except (TypeError, ValueError):
+            return HttpResponseBadRequest('Frame number must be an integer')
+
+        if frame_number < 0 or (db_task.data and frame_number >= db_task.data.size):
+            return HttpResponseBadRequest('Frame number out of range')
+
+        video_path = os.path.join(settings.DATA_ROOT, 'multiview', str(pk), f'view{view_id}.mp4')
+        if not os.path.exists(video_path):
+            return HttpResponseNotFound(f'Video file not found: view{view_id}')
+
+        quality = request.query_params.get('quality', 'compressed') or 'compressed'
+        cache_key = (int(pk), int(view_id), frame_number, str(quality))
+        with _MULTIVIEW_FRAME_CACHE_LOCK:
+            cached = _MULTIVIEW_FRAME_CACHE.get(cache_key)
+            if cached:
+                _MULTIVIEW_FRAME_CACHE.move_to_end(cache_key)
+                return HttpResponse(cached, content_type='image/png')
+
+        cap = cv2.VideoCapture(video_path)
+        try:
+            if not cap.isOpened():
+                return HttpResponseNotFound('Failed to open video file')
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            success, frame = cap.read()
+            if not success or frame is None:
+                return HttpResponseNotFound('Frame not found')
+
+            encode_success, buffer = cv2.imencode('.png', frame)
+            if not encode_success:
+                return HttpResponse(status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            payload = buffer.tobytes()
+            with _MULTIVIEW_FRAME_CACHE_LOCK:
+                _MULTIVIEW_FRAME_CACHE[cache_key] = payload
+                _MULTIVIEW_FRAME_CACHE.move_to_end(cache_key)
+                while len(_MULTIVIEW_FRAME_CACHE) > _MULTIVIEW_FRAME_CACHE_MAX_ENTRIES:
+                    _MULTIVIEW_FRAME_CACHE.popitem(last=False)
+            return HttpResponse(payload, content_type='image/png')
+        finally:
+            cap.release()
 
 
 @extend_schema(tags=['jobs'])

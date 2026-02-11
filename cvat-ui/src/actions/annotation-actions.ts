@@ -1045,7 +1045,7 @@ export function getJobAsync({
                     const videoData = apiResponse?.[viewKey];
                     videos[`view${i}`] = {
                         url: `/api/tasks/${taskID}/multiview/video/${i}`,
-                        fps: 30, // Will be updated from metadata if available
+                        fps: videoData?.fps || 30,
                         width: videoData?.width || 0,
                         height: videoData?.height || 0,
                     };

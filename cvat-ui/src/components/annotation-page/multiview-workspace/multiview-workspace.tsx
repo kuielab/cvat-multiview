@@ -27,6 +27,7 @@ import MultiviewVideoGrid from './multiview-video-grid';
 import SpectrogramPanel from './spectrogram-panel';
 import MultiviewObjectsList from './multiview-objects-list';
 import MultiviewCanvasWrapper from './multiview-canvas-wrapper';
+import { clearMultiviewFrameCache } from './multiview-frame-provider';
 import './styles.scss';
 
 const PLAYBACK_RATE_OPTIONS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -398,7 +399,7 @@ export default function MultiviewWorkspace(): JSX.Element {
     // Uses pointer-centered zoom: the point under the mouse stays fixed during zoom
     const handleZoom = useCallback((deltaY: number, clientX: number, clientY: number): void => {
         if (renderMode === 'canvas' && canvasInstance) {
-            const container = videoElement?.closest('.video-canvas-container');
+            const container = canvasContainer || videoElement?.closest('.video-canvas-container');
             if (!container) return;
             const rect = container.getBoundingClientRect();
             const mx = clientX - rect.left;
@@ -436,7 +437,7 @@ export default function MultiviewWorkspace(): JSX.Element {
 
             return { level: newLevel, translateX: newTranslateX, translateY: newTranslateY };
         });
-    }, [videoElement, renderMode, canvasInstance]);
+    }, [videoElement, renderMode, canvasInstance, canvasContainer]);
 
     // Handle pan (drag to move when zoomed)
     const handlePan = useCallback((dx: number, dy: number): void => {
@@ -502,6 +503,7 @@ export default function MultiviewWorkspace(): JSX.Element {
         return () => {
             canvasInstancesRef.current.forEach((instance) => instance.destroy());
             canvasInstancesRef.current.clear();
+            clearMultiviewFrameCache();
         };
     }, []);
 
