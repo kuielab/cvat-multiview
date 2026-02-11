@@ -15,7 +15,7 @@ import {
     resetCanvas,
     activateObject,
     updateAnnotationsAsync,
-    removeObject as removeObjectAction,
+    removeObjectAsync,
 } from 'actions/annotation-actions';
 import { filterAnnotations } from 'utils/filter-annotations';
 import { bindCanvasEventHandlers, CanvasEventHandlers } from './multiview-canvas-events';
@@ -629,7 +629,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [dispatch]);
 
     /**
-     * Handle keydown event - Delete key to remove activated annotation
+     * Handle keydown event - Delete key to remove activated annotation.
+     * Uses removeObjectAsync directly for reliable deletion, bypassing the
+     * RemoveConfirmComponent flow which can have timing issues when both
+     * this handler and the react-hotkeys handler in ObjectsListContainer fire.
      */
     const onKeyDown = useCallback((event: KeyboardEvent): void => {
         const refs = stateRefs.current;
@@ -649,15 +652,17 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
         if (!activatedState) return;
 
+        // Prevent default behavior and stop propagation FIRST to prevent
+        // the react-hotkeys handler in ObjectsListContainer from also handling
+        // this event (which would cause a double-delete attempt)
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
         // Check if object is locked (shift key forces delete of locked objects)
         const force = event.shiftKey;
 
-        // Dispatch remove action
-        dispatch(removeObjectAction(activatedState, force));
-
-        // Prevent default behavior
-        event.preventDefault();
-        event.stopPropagation();
+        // Use removeObjectAsync directly for reliable deletion
+        dispatch(removeObjectAsync(activatedState, force));
     }, [canvasInstance, dispatch]);
 
     // Update event handler refs whenever callbacks change
