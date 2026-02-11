@@ -8,7 +8,14 @@ import Layout from 'antd/lib/layout';
 import Select from 'antd/lib/select';
 
 import { CombinedState, ActiveControl } from 'reducers';
-import { changeFrameAsync, switchPlay } from 'actions/annotation-actions';
+import {
+    changeFrameAsync,
+    switchPlay,
+    setCanvasInstance,
+    updateActiveControl as updateActiveControlAction,
+    updateCanvasContextMenu,
+} from 'actions/annotation-actions';
+import { Canvas } from 'cvat-canvas-wrapper';
 import ControlsSideBarContainer from 'containers/annotation-page/standard-workspace/controls-side-bar/controls-side-bar';
 import ObjectSideBarComponent from 'components/annotation-page/standard-workspace/objects-side-bar/objects-side-bar';
 import CanvasContextMenuContainer from 'containers/annotation-page/canvas/canvas-context-menu';
@@ -59,9 +66,14 @@ export default function MultiviewWorkspace(): JSX.Element {
     const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
     const [playbackRate, setPlaybackRate] = useState<number>(1.0);
     const [zoomState, setZoomState] = useState<ZoomState>({ level: 1.0, translateX: 0, translateY: 0 });
+    const renderMode = typeof window !== 'undefined' &&
+        (window as any).CVAT_MULTIVIEW_CANVAS_RENDER === true ? 'canvas' : 'video';
     const lastFrameRef = useRef<number>(-1);
+    const clockStartTimeRef = useRef<number | null>(null);
+    const clockStartFrameRef = useRef<number | null>(null);
     const videoRefsMap = useRef<Map<number, HTMLVideoElement>>(new Map());
     const syncIntervalRef = useRef<number | null>(null);
+    const canvasInstancesRef = useRef<Map<number, Canvas>>(new Map());
     // Use a ref to track playing state synchronously to avoid race conditions
     // This ref is updated BEFORE starting/stopping playback to prevent seek effect from triggering
     const playingRef = useRef<boolean>(false);
@@ -72,6 +84,7 @@ export default function MultiviewWorkspace(): JSX.Element {
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
     const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
+    const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
 
     // Track previous activeControl to detect transitions into draw mode
     const prevActiveControlRef = useRef<ActiveControl>(activeControl);
@@ -110,6 +123,9 @@ export default function MultiviewWorkspace(): JSX.Element {
 
     // Play all videos synchronously
     const playAllVideos = useCallback(async (): Promise<void> => {
+        if (renderMode === 'canvas') {
+            return;
+        }
         const domVideos = document.querySelectorAll('.multiview-video') as NodeListOf<HTMLVideoElement>;
         if (domVideos.length === 0) {
             console.warn('No videos found');
@@ -189,6 +205,8 @@ export default function MultiviewWorkspace(): JSX.Element {
         if (playing) {
             // Set ref BEFORE starting playback to prevent seek effect from triggering
             playingRef.current = true;
+            clockStartTimeRef.current = performance.now();
+            clockStartFrameRef.current = frameNumberRef.current;
             playAllVideosRef.current().then(() => {
                 startSyncIntervalRef.current();
             });
@@ -197,6 +215,8 @@ export default function MultiviewWorkspace(): JSX.Element {
             playingRef.current = false;
             stopSyncIntervalRef.current();
             pauseAllVideosRef.current();
+            clockStartTimeRef.current = null;
+            clockStartFrameRef.current = null;
         }
 
         return () => {
@@ -228,9 +248,9 @@ export default function MultiviewWorkspace(): JSX.Element {
     // Seek all videos when frame changes while NOT playing
     // Use playingRef (synchronous) instead of playing (from Redux) to avoid race conditions
     useEffect(() => {
-        // Only seek when paused - during playback, videos control their own time
-        // Use playingRef for synchronous check to prevent race conditions
-        if (playingRef.current) return;
+        // In canvas render mode, always seek videos on frame changes so canvas
+        // can capture the correct frame without relying on video playback.
+        if (playingRef.current && renderMode !== 'canvas') return;
 
         const domVideos = document.querySelectorAll('.multiview-video') as NodeListOf<HTMLVideoElement>;
         if (domVideos.length === 0) return;
@@ -245,7 +265,7 @@ export default function MultiviewWorkspace(): JSX.Element {
                 video.currentTime = targetTime;
             }
         });
-    }, [frameNumber, job, fps]); // Removed 'playing' - we use playingRef instead
+    }, [frameNumber, job, fps, renderMode]); // Removed 'playing' - we use playingRef instead
 
     // Apply playback rate to all videos
     useEffect(() => {
@@ -273,10 +293,6 @@ export default function MultiviewWorkspace(): JSX.Element {
             return undefined;
         }
 
-        const domVideos = document.querySelectorAll('.multiview-video') as NodeListOf<HTMLVideoElement>;
-        if (domVideos.length === 0) return undefined;
-
-        const primaryVideo = domVideos[0];
         let animationId: number;
         let lastDispatchedFrame = lastFrameRef.current;
         let lastDispatchTime = 0;
@@ -286,25 +302,56 @@ export default function MultiviewWorkspace(): JSX.Element {
         // This prevents multiple changeFrameAsync calls from completing out of order
         const THROTTLE_MS = 100;
 
-        const updateFrame = (): void => {
+        const updateFrameFromClock = (): void => {
+            const now = performance.now();
+            if (clockStartTimeRef.current === null || clockStartFrameRef.current === null) {
+                clockStartTimeRef.current = now;
+                clockStartFrameRef.current = frameNumberRef.current;
+            }
+            const elapsed = (now - clockStartTimeRef.current) / 1000;
+            const newFrame = Math.round(clockStartFrameRef.current + elapsed * fps);
+
+            const shouldDispatch = newFrame !== lastDispatchedFrame &&
+                (now - lastDispatchTime) >= THROTTLE_MS &&
+                !pendingDispatch &&
+                job;
+
+            if (shouldDispatch) {
+                lastDispatchedFrame = newFrame;
+                lastFrameRef.current = newFrame;
+                lastDispatchTime = now;
+                pendingDispatch = true;
+
+                const targetFrame = Math.min(Math.max(newFrame, job.startFrame || 0), job.stopFrame);
+                Promise.resolve(dispatch(changeFrameAsync(targetFrame))).finally(() => {
+                    pendingDispatch = false;
+                });
+            }
+
+            animationId = requestAnimationFrame(updateFrameFromClock);
+        };
+
+        const updateFrameFromVideo = (): void => {
+            const domVideos = document.querySelectorAll('.multiview-video') as NodeListOf<HTMLVideoElement>;
+            if (domVideos.length === 0) {
+                animationId = requestAnimationFrame(updateFrameFromVideo);
+                return;
+            }
+
+            const primaryVideo = domVideos[0];
             if (!primaryVideo || primaryVideo.paused) {
-                animationId = requestAnimationFrame(updateFrame);
+                animationId = requestAnimationFrame(updateFrameFromVideo);
                 return;
             }
 
             const now = performance.now();
             const masterTime = primaryVideo.currentTime;
-            // Use Math.round instead of Math.floor to avoid oscillation at frame boundaries
             const newFrame = Math.round(masterTime * fps);
 
-            // Only dispatch if:
-            // 1. Frame actually changed
-            // 2. Enough time has passed since last dispatch (throttle)
-            // 3. No pending dispatch in progress
             const shouldDispatch = newFrame !== lastDispatchedFrame &&
-                                   (now - lastDispatchTime) >= THROTTLE_MS &&
-                                   !pendingDispatch &&
-                                   job;
+                (now - lastDispatchTime) >= THROTTLE_MS &&
+                !pendingDispatch &&
+                job;
 
             if (shouldDispatch) {
                 lastDispatchedFrame = newFrame;
@@ -313,29 +360,24 @@ export default function MultiviewWorkspace(): JSX.Element {
                 pendingDispatch = true;
 
                 const targetFrame = Math.min(newFrame + (job.startFrame || 0), job.stopFrame);
-
-                // Use Promise to track when dispatch completes
                 Promise.resolve(dispatch(changeFrameAsync(targetFrame))).finally(() => {
                     pendingDispatch = false;
                 });
             }
 
-            animationId = requestAnimationFrame(updateFrame);
+            animationId = requestAnimationFrame(updateFrameFromVideo);
         };
 
-        // Handle video ended - stop playback and update Redux state
-        const handleEnded = (): void => {
-            dispatch(switchPlay(false));
-        };
-
-        primaryVideo.addEventListener('ended', handleEnded);
-        animationId = requestAnimationFrame(updateFrame);
+        if (renderMode === 'canvas') {
+            animationId = requestAnimationFrame(updateFrameFromClock);
+        } else {
+            animationId = requestAnimationFrame(updateFrameFromVideo);
+        }
 
         return () => {
             cancelAnimationFrame(animationId);
-            primaryVideo.removeEventListener('ended', handleEnded);
         };
-    }, [playing, fps, job, dispatch]);
+    }, [playing, fps, job, dispatch, renderMode]);
 
     // Handle audio engine initialization
     // Note: We intentionally do NOT call engine.initialize(videos) here because
@@ -355,6 +397,15 @@ export default function MultiviewWorkspace(): JSX.Element {
     // Handle zoom from mouse wheel on canvas overlay
     // Uses pointer-centered zoom: the point under the mouse stays fixed during zoom
     const handleZoom = useCallback((deltaY: number, clientX: number, clientY: number): void => {
+        if (renderMode === 'canvas' && canvasInstance) {
+            const container = videoElement?.closest('.video-canvas-container');
+            if (!container) return;
+            const rect = container.getBoundingClientRect();
+            const mx = clientX - rect.left;
+            const my = clientY - rect.top;
+            canvasInstance.zoom(mx, my, deltaY);
+            return;
+        }
         if (!videoElement) return;
         const container = videoElement.closest('.video-canvas-container');
         if (!container) return;
@@ -385,20 +436,28 @@ export default function MultiviewWorkspace(): JSX.Element {
 
             return { level: newLevel, translateX: newTranslateX, translateY: newTranslateY };
         });
-    }, [videoElement]);
+    }, [videoElement, renderMode, canvasInstance]);
 
     // Handle pan (drag to move when zoomed)
     const handlePan = useCallback((dx: number, dy: number): void => {
+        if (renderMode === 'canvas' && canvasInstance) {
+            canvasInstance.move(dy, dx);
+            return;
+        }
         setZoomState((prev) => {
             if (prev.level <= MIN_ZOOM) return prev;
             return { ...prev, translateX: prev.translateX + dx, translateY: prev.translateY + dy };
         });
-    }, []);
+    }, [renderMode, canvasInstance]);
 
     // Reset zoom to default
     const handleZoomReset = useCallback((): void => {
+        if (renderMode === 'canvas' && canvasInstance) {
+            canvasInstance.fit();
+            return;
+        }
         setZoomState({ level: 1.0, translateX: 0, translateY: 0 });
-    }, []);
+    }, [renderMode, canvasInstance]);
 
     // Handle container resize while zoomed - adjust CSS translate to maintain content center
     const handleContainerResize = useCallback((
@@ -453,10 +512,12 @@ export default function MultiviewWorkspace(): JSX.Element {
                     zoomState={zoomState}
                     onPan={handlePan}
                     onZoomReset={handleZoomReset}
+                    renderMode={renderMode}
                 />
                 <SpectrogramPanel
                     audioEngine={audioEngine}
                     onEngineReady={handleEngineReady}
+                    renderMode={renderMode}
                 />
             </Layout.Content>
             <ObjectSideBarComponent objectsList={<MultiviewObjectsList activeView={activeView} />} />
@@ -471,7 +532,37 @@ export default function MultiviewWorkspace(): JSX.Element {
                 onZoom={handleZoom}
                 zoomLevel={zoomState.level}
                 onContainerResize={handleContainerResize}
+                renderMode={renderMode}
             />
         </Layout>
     );
 }
+    useEffect(() => {
+        if (renderMode !== 'canvas') return;
+
+        let instance = canvasInstancesRef.current.get(activeView);
+        if (!instance) {
+            instance = new Canvas();
+            canvasInstancesRef.current.set(activeView, instance);
+        }
+
+        dispatch(setCanvasInstance(instance));
+        dispatch(updateActiveControlAction(ActiveControl.CURSOR));
+        dispatch(updateCanvasContextMenu(false, 0, 0));
+    }, [activeView, dispatch, renderMode]);
+
+    useEffect(() => {
+        return () => {
+            canvasInstancesRef.current.forEach((instance) => instance.destroy());
+            canvasInstancesRef.current.clear();
+        };
+    }, []);
+
+    useEffect(() => {
+        if (renderMode !== 'canvas' || !canvasInstance) return;
+        try {
+            canvasInstance.cancel();
+        } catch {
+            // Ignore if canvas is not in a cancelable state
+        }
+    }, [canvasInstance, renderMode, activeView]);

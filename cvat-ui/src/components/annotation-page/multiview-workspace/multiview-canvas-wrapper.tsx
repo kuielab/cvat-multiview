@@ -96,6 +96,7 @@ interface Props {
     zoomLevel?: number;
     /** Called when container resizes while zoomed, so parent can adjust CSS translate. */
     onContainerResize?: (oldW: number, oldH: number, newW: number, newH: number) => void;
+    renderMode?: 'video' | 'canvas';
 }
 
 function prepareDisplayAnnotations(params: {
@@ -145,7 +146,7 @@ function prepareDisplayAnnotations(params: {
 }
 
 export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null {
-    const { canvasContainer, videoElement, activeViewId, onZoom, zoomLevel = 1.0, onContainerResize } = props;
+    const { canvasContainer, videoElement, activeViewId, onZoom, zoomLevel = 1.0, onContainerResize, renderMode = 'video' } = props;
     const dispatch = useDispatch();
     const mountedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -211,6 +212,34 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         allowTimeoutFallback: false,
         debug: debugMultiview,
     });
+
+    const createFrameDataFromVideo = useCallback((baseFrameData: any, video: HTMLVideoElement) => {
+        const proxy = new Proxy(baseFrameData, {
+            get(target, prop, receiver) {
+                if (prop === 'width') {
+                    return video.videoWidth || Reflect.get(target, prop, receiver);
+                }
+                if (prop === 'height') {
+                    return video.videoHeight || Reflect.get(target, prop, receiver);
+                }
+                if (prop === 'data') {
+                    return async (...args: any[]) => {
+                        if (video.videoWidth > 0 && video.videoHeight > 0) {
+                            const imageData = await createImageBitmap(video);
+                            return {
+                                renderWidth: video.videoWidth,
+                                renderHeight: video.videoHeight,
+                                imageData,
+                            };
+                        }
+                        return baseFrameData.data(...args);
+                    };
+                }
+                return Reflect.get(target, prop, receiver);
+            },
+        });
+        return proxy;
+    }, []);
 
     // Use refs for values that change frequently but shouldn't cause remount
     const stateRefs = useRef({
@@ -516,13 +545,16 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
      * handler that scales the entire video+canvas container together.
      */
     const handleWheel = useCallback((e: WheelEvent): void => {
+        if (renderMode === 'canvas') {
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         // Relay to parent for CSS-based zoom of video + canvas container
         if (onZoom) {
             onZoom(e.deltaY, e.clientX, e.clientY);
         }
-    }, [onZoom]);
+    }, [onZoom, renderMode]);
 
     /**
      * Handle mousedown in bubble phase - this is now a no-op as canvasView.ts
@@ -970,7 +1002,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             transformParamsRef.current = null;
         }
 
-        const effectiveFrameData = transformResult ? transformResult.frameData : frameData;
+        let effectiveFrameData = transformResult ? transformResult.frameData : frameData;
+        if (renderMode === 'canvas' && videoElement) {
+            effectiveFrameData = createFrameDataFromVideo(effectiveFrameData, videoElement);
+        }
 
         const isInitialSetup = prevSetupViewIdRef.current === null;
         const displayAnnotations = prepareDisplayAnnotations({
