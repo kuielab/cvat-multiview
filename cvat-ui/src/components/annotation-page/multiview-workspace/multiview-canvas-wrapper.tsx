@@ -1030,10 +1030,20 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         }
     }, [canvasInstance, activatedStateID, activatedAttributeID, annotations]);
 
-    // Note: Removed the activeControl effect that was calling canvasInstance.cancel()
-    // when activeControl changed to a draw mode. This was causing the drawing to be
-    // immediately canceled after starting. The canvas mode is properly managed by
-    // the draw-shape-popover which calls canvasInstance.draw() to start drawing.
+    // When activeControl transitions away from a draw mode back to CURSOR,
+    // explicitly disable drawing so the canvas cleans up draw state (crosshair, etc.).
+    // Note: We only call draw({ enabled: false }) when LEAVING draw mode, not when entering.
+    // Entering draw mode is handled by the draw-shape-popover which calls canvasInstance.draw().
+    useEffect(() => {
+        if (!canvasInstance) return;
+        if (!isDrawOperationRequested(activeControl)) {
+            try {
+                canvasInstance.draw({ enabled: false });
+            } catch {
+                // Canvas might not be in a drawable state
+            }
+        }
+    }, [canvasInstance, activeControl]);
 
     // This component doesn't render anything - it just manages the canvas
     return null;
