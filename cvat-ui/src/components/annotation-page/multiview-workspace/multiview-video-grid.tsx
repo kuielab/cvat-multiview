@@ -18,6 +18,7 @@ interface Props {
     zoomState?: ZoomState;
     onPan?: (dx: number, dy: number) => void;
     onZoomReset?: () => void;
+    renderMode?: 'video' | 'canvas';
 }
 
 interface ViewConfig {
@@ -27,7 +28,7 @@ interface ViewConfig {
 }
 
 export default function MultiviewVideoGrid(props: Props): JSX.Element {
-    const { activeView, onViewSelect, playbackRate, onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset } = props;
+    const { activeView, onViewSelect, playbackRate, onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset, renderMode } = props;
 
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
@@ -86,6 +87,7 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
                 zoomState={activeView === view.viewId ? zoomState : undefined}
                 onPan={activeView === view.viewId ? onPan : undefined}
                 onZoomReset={activeView === view.viewId ? onZoomReset : undefined}
+                renderMode={renderMode}
             />
         </div>
     );

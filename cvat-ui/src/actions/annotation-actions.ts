@@ -174,6 +174,7 @@ export enum AnnotationActionTypes {
     UPDATE_BRUSH_TOOLS_CONFIG = 'UPDATE_BRUSH_TOOLS_CONFIG',
     HIGHLIGHT_CONFLICT = 'HIGHLIGHT_CONFCLICT',
     HOVERED_CHAPTER = 'HOVERED_CHAPTER',
+    SET_CANVAS_INSTANCE = 'SET_CANVAS_INSTANCE',
 }
 
 export function setHoveredChapter(id: number | null): AnyAction {
@@ -181,6 +182,15 @@ export function setHoveredChapter(id: number | null): AnyAction {
         type: AnnotationActionTypes.HOVERED_CHAPTER,
         payload: {
             id,
+        },
+    };
+}
+
+export function setCanvasInstance(instance: Canvas | Canvas3d | null): AnyAction {
+    return {
+        type: AnnotationActionTypes.SET_CANVAS_INSTANCE,
+        payload: {
+            instance,
         },
     };
 }

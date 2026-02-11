@@ -21,10 +21,11 @@ interface MultiviewVideos {
 interface Props {
     audioEngine: MultiviewAudioEngine | null;
     onEngineReady?: (engine: MultiviewAudioEngine) => void;
+    renderMode?: 'video' | 'canvas';
 }
 
 export default function SpectrogramPanel(props: Props): JSX.Element {
-    const { audioEngine: externalEngine, onEngineReady } = props;
+    const { audioEngine: externalEngine, onEngineReady, renderMode = 'video' } = props;
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -261,7 +262,9 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         const primaryVideo = document.querySelector('.multiview-video') as HTMLVideoElement;
 
         const animate = (): void => {
-            if (primaryVideo && !primaryVideo.paused) {
+            if (renderMode === 'canvas') {
+                drawPlayheadOnly(currentTime);
+            } else if (primaryVideo && !primaryVideo.paused) {
                 drawPlayheadOnly(primaryVideo.currentTime);
             }
             animationId = requestAnimationFrame(animate);
@@ -321,16 +324,19 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         setLoadingStatus('Collecting video sources...');
 
         try {
-            // Get all video elements from the page
+            // Prefer metadata URLs to avoid DOM dependence (canvas render mode)
+            const urlsFromMetadata = multiviewData?.videos ?
+                Object.values(multiviewData.videos)
+                    .map((v) => v?.url)
+                    .filter((src): src is string => !!src) : [];
+
+            // Fallback to DOM video elements if metadata is missing
             const videoElements = Array.from(
                 document.querySelectorAll('.multiview-video'),
             ) as HTMLVideoElement[];
+            const urlsFromDom = videoElements.map((v) => v.src).filter((src) => src);
 
-            if (videoElements.length === 0) {
-                throw new Error('No video elements found');
-            }
-
-            const urls = videoElements.map((v) => v.src).filter((src) => src);
+            const urls = urlsFromMetadata.length ? urlsFromMetadata : urlsFromDom;
 
             if (urls.length === 0) {
                 throw new Error('No video URLs available');

@@ -312,6 +312,16 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                 },
             };
         }
+        case AnnotationActionTypes.SET_CANVAS_INSTANCE: {
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    instance: action.payload.instance,
+                    ready: false,
+                },
+            };
+        }
         case JobsActionTypes.UPDATE_JOB_SUCCESS: {
             return {
                 ...state,

@@ -4,6 +4,7 @@
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { ZoomState } from './multiview-workspace';
+import MultiviewCanvasPreview from './multiview-canvas-preview';
 
 interface VideoDisplayArea {
     width: number;
@@ -25,6 +26,7 @@ interface Props {
     zoomState?: ZoomState;
     onPan?: (dx: number, dy: number) => void;
     onZoomReset?: () => void;
+    renderMode?: 'video' | 'canvas';
 }
 
 /**
@@ -70,11 +72,13 @@ function calculateVideoDisplayArea(
 export default function VideoCanvas(props: Props): JSX.Element {
     const {
         viewId, frameNumber, videoUrl, fps, isActive, playing, playbackRate,
-        onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset,
+        onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset, renderMode = 'video',
     } = props;
 
     const videoRef = useRef<HTMLVideoElement>(null);
+    const [videoElementState, setVideoElementState] = useState<HTMLVideoElement | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const previewContainerRef = useRef<HTMLDivElement>(null);
     const [videoDisplayArea, setVideoDisplayArea] = useState<VideoDisplayArea | null>(null);
 
     // Ref for zoomState to avoid re-registering event listeners on every zoom change.
@@ -91,6 +95,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
     // Use callback ref to report video element to parent when mounted
     const videoCallbackRef = useCallback((node: HTMLVideoElement | null) => {
         (videoRef as React.MutableRefObject<HTMLVideoElement | null>).current = node;
+        setVideoElementState(node);
         if (onVideoRef) {
             onVideoRef(viewId, node);
         }
@@ -277,8 +282,18 @@ export default function VideoCanvas(props: Props): JSX.Element {
     // ALL video control (play/pause/seek) is handled by parent component
     // This component only renders the video element
 
-    // Calculate inline styles for canvas overlay to match video display area
-    const canvasOverlayStyle: React.CSSProperties = videoDisplayArea ? {
+    const useCanvasRender = renderMode === 'canvas';
+    const showPreview = renderMode === 'canvas' && !isActive;
+
+    // Calculate inline styles for canvas overlay.
+    // In canvas render mode (active view), use full container size to avoid letterboxing logic.
+    const canvasOverlayStyle: React.CSSProperties = useCanvasRender ? {
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: '100%',
+        height: '100%',
+    } : (videoDisplayArea ? {
         position: 'absolute',
         left: `${videoDisplayArea.offsetX}px`,
         top: `${videoDisplayArea.offsetY}px`,
@@ -291,12 +306,21 @@ export default function VideoCanvas(props: Props): JSX.Element {
         top: 0,
         width: '100%',
         height: '100%',
-    };
+    });
+
+    const videoStyle: React.CSSProperties = useCanvasRender ? {
+        opacity: 0,
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+    } : {};
 
     // CSS transform for zoom: translate then scale from origin (0,0).
-    // Both video and canvas overlay are inside the zoom-wrapper so they scale
-    // together — bbox coordinates stay perfectly aligned with the video image.
-    const zoomLevel = zoomState?.level ?? 1.0;
+    // Disabled in canvas render mode (canvas handles zoom/pan directly).
+    const zoomLevel = renderMode === 'canvas' ? 1.0 : (zoomState?.level ?? 1.0);
     const zoomWrapperStyle: React.CSSProperties = {
         width: '100%',
         height: '100%',
@@ -321,12 +345,27 @@ export default function VideoCanvas(props: Props): JSX.Element {
                     playsInline
                     crossOrigin="anonymous"
                     muted={!isActive}
+                    style={videoStyle}
                 />
                 {isActive && (
                     <div
                         ref={canvasContainerCallbackRef}
                         className='annotation-canvas-overlay active-canvas'
                         style={canvasOverlayStyle}
+                    />
+                )}
+                {showPreview && (
+                    <div
+                        ref={previewContainerRef}
+                        className='annotation-canvas-preview'
+                        style={canvasOverlayStyle}
+                    />
+                )}
+                {showPreview && (
+                    <MultiviewCanvasPreview
+                        container={previewContainerRef.current}
+                        videoElement={videoElementState}
+                        viewId={viewId}
                     />
                 )}
             </div>
