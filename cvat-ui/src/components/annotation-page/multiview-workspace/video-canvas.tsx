@@ -107,6 +107,11 @@ export default function VideoCanvas(props: Props): JSX.Element {
     const canvasContainerCallbackRef = useCallback((node: HTMLDivElement | null) => {
         if (!onCanvasContainerReady) return;
 
+        if (renderMode === 'canvas') {
+            onCanvasContainerReady(node, null);
+            return;
+        }
+
         const video = videoRef.current;
 
         // If node is null (unmounting) or video is null, call callback immediately
@@ -130,7 +135,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
             };
             video.addEventListener('loadeddata', handleDataLoaded);
         }
-    }, [onCanvasContainerReady, isActive, viewId]);
+    }, [onCanvasContainerReady, renderMode, viewId]);
 
     // Cleanup when becoming inactive
     useEffect(() => {
@@ -139,12 +144,23 @@ export default function VideoCanvas(props: Props): JSX.Element {
         }
     }, [isActive, onCanvasContainerReady]);
 
+    useEffect(() => {
+        if (renderMode !== 'video' && onVideoRef) {
+            onVideoRef(viewId, null);
+        }
+        if (renderMode !== 'video') {
+            setVideoElementState(null);
+        }
+    }, [renderMode, onVideoRef, viewId]);
+
     /**
      * Calculate video display area when:
      * - Video metadata loads (provides video dimensions)
      * - Container resizes
      */
     useEffect(() => {
+        if (renderMode !== 'video') return undefined;
+
         const video = videoRef.current;
         const container = containerRef.current;
 
@@ -190,7 +206,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
             video.removeEventListener('loadedmetadata', handleLoadedMetadata);
             resizeObserver.disconnect();
         };
-    }, [videoUrl]);
+    }, [videoUrl, renderMode]);
 
     /**
      * Pan support when zoomed in.
@@ -204,7 +220,8 @@ export default function VideoCanvas(props: Props): JSX.Element {
 
         const handleMouseDown = (e: MouseEvent): void => {
             const currentZoom = zoomStateRef.current;
-            if (!currentZoom || currentZoom.level <= 1.0) return;
+            const allowPan = renderMode === 'canvas' || (currentZoom && currentZoom.level > 1.0);
+            if (!allowPan) return;
 
             // Middle button (1), Right button (2), Alt+Left (0) - pan when zoomed
             if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
@@ -265,7 +282,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-    }, [isActive, onPan]);
+        }, [isActive, onPan, renderMode]);
 
     /**
      * Double-click to reset zoom (only when zoomed in).
@@ -338,15 +355,17 @@ export default function VideoCanvas(props: Props): JSX.Element {
     return (
         <div ref={containerRef} className='video-canvas-container' onDoubleClick={handleDoubleClick}>
             <div className='zoom-wrapper' style={zoomWrapperStyle}>
-                <video
-                    ref={videoCallbackRef}
-                    src={videoUrl}
-                    className='multiview-video'
-                    playsInline
-                    crossOrigin="anonymous"
-                    muted={!isActive}
-                    style={videoStyle}
-                />
+                {renderMode === 'video' && (
+                    <video
+                        ref={videoCallbackRef}
+                        src={videoUrl}
+                        className='multiview-video'
+                        playsInline
+                        crossOrigin="anonymous"
+                        muted={!isActive}
+                        style={videoStyle}
+                    />
+                )}
                 {isActive && (
                     <div
                         ref={canvasContainerCallbackRef}

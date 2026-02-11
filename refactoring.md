@@ -81,6 +81,7 @@ changed or re-validated if we move to a "canvas-renders-video per view" design.
 
 1. Frame Image Delivery
    - Provide per-view frame images or a decode endpoint that can be drawn onto canvas.
+   - Implemented: `/api/tasks/{id}/multiview/frame/{view_id}?number=...` returning PNG frames.
    - Decide on format and performance strategy:
      - PNG/JPEG frames
      - WebP frames
@@ -90,10 +91,12 @@ changed or re-validated if we move to a "canvas-renders-video per view" design.
 2. Multiview Metadata
    - Confirm `multiview_data` returns authoritative width/height for each view.
    - Add fps and timebase information if needed by the canvas-driven player.
+   - Implemented: `fps` injected into `multiview_data` per view.
 
 3. Caching and Range
    - If using frame endpoints, design cache policies for repeated frames.
    - Verify API request rate limits for multi-view access patterns.
+   - Implemented: in-memory LRU cache for multiview frame PNG responses.
 
 ### B. Frontend Rendering Pipeline
 

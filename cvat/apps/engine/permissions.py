@@ -628,6 +628,7 @@ class TaskPermission(
             ('create_multiview', 'POST'): Scopes.CREATE,
             ('multiview_data', 'GET'): Scopes.VIEW_DATA,
             ('serve_multiview_video', 'GET'): Scopes.VIEW_DATA,
+            ('serve_multiview_frame', 'GET'): Scopes.VIEW_DATA,
             ('retrieve', 'GET'): Scopes.VIEW,
             ('status', 'GET'): Scopes.VIEW,
             ('partial_update', 'PATCH'): Scopes.UPDATE,

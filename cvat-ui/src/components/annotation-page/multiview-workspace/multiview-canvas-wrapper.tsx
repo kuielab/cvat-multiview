@@ -31,6 +31,7 @@ import {
     transformPointsForStorage,
 } from './multiview-canvas-utils';
 import { useStableVideoDims } from './use-stable-video-dims';
+import { fetchMultiviewFrameImage } from './multiview-frame-provider';
 
 // Draw-related modes that should not be interrupted
 const DRAW_MODES: string[] = ['draw', 'draw_rect', 'draw_polygon', 'draw_polyline', 'draw_points', 'draw_ellipse', 'draw_cuboid', 'draw_skeleton', 'draw_mask'];
@@ -213,24 +214,36 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         debug: debugMultiview,
     });
 
-    const createFrameDataFromVideo = useCallback((baseFrameData: any, video: HTMLVideoElement) => {
+    const createFrameDataFromMultiview = useCallback((
+        baseFrameData: any,
+        taskId: number | null,
+        viewId: number,
+        renderWidth: number,
+        renderHeight: number,
+    ) => {
         const proxy = new Proxy(baseFrameData, {
             get(target, prop, receiver) {
                 if (prop === 'width') {
-                    return video.videoWidth || Reflect.get(target, prop, receiver);
+                    return renderWidth || Reflect.get(target, prop, receiver);
                 }
                 if (prop === 'height') {
-                    return video.videoHeight || Reflect.get(target, prop, receiver);
+                    return renderHeight || Reflect.get(target, prop, receiver);
                 }
                 if (prop === 'data') {
                     return async (...args: any[]) => {
-                        if (video.videoWidth > 0 && video.videoHeight > 0) {
-                            const imageData = await createImageBitmap(video);
-                            return {
-                                renderWidth: video.videoWidth,
-                                renderHeight: video.videoHeight,
-                                imageData,
-                            };
+                        if (taskId) {
+                            try {
+                                return await fetchMultiviewFrameImage({
+                                    taskId,
+                                    viewId,
+                                    frameNumber: target.number,
+                                    renderWidthFallback: renderWidth,
+                                    renderHeightFallback: renderHeight,
+                                });
+                            } catch (error) {
+                                // Fallback to base frame data if fetch fails
+                                return baseFrameData.data(...args);
+                            }
                         }
                         return baseFrameData.data(...args);
                     };
@@ -1003,8 +1016,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         }
 
         let effectiveFrameData = transformResult ? transformResult.frameData : frameData;
-        if (renderMode === 'canvas' && videoElement) {
-            effectiveFrameData = createFrameDataFromVideo(effectiveFrameData, videoElement);
+        if (renderMode === 'canvas') {
+            const taskId = jobInstance?.taskId ?? null;
+            effectiveFrameData = createFrameDataFromMultiview(
+                effectiveFrameData,
+                taskId,
+                activeViewId,
+                stableVideoDims.width,
+                stableVideoDims.height,
+            );
         }
 
         const isInitialSetup = prevSetupViewIdRef.current === null;
