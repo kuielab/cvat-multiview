@@ -71,13 +71,6 @@ export function bindCanvasEventHandlers(
     const handleWheelWrapper = (e: WheelEvent): void => {
         eventHandlersRef.current.onWheel?.(e);
     };
-    const handleDblClick = (e: MouseEvent): void => {
-        // Block canvasView.ts dblclick handler that triggers focus()/fit()
-        // which corrupts SVG geometry in multiview (viewportLocked doesn't guard focus/fit)
-        // CSS zoom reset on video-canvas-container is unaffected (different element)
-        e.stopImmediatePropagation();
-        e.preventDefault();
-    };
 
     canvasHTML.addEventListener('canvas.drawn', handleShapeDrawn);
     canvasHTML.addEventListener('canvas.setup', handleSetup);
@@ -91,7 +84,6 @@ export function bindCanvasEventHandlers(
     canvasHTML.addEventListener('canvas.moved', handleCursorMoved as EventListener);
     canvasHTML.addEventListener('canvas.edited', handleEditDone);
     canvasHTML.addEventListener('mousedown', handleMouseDown, { capture: true });
-    canvasHTML.addEventListener('dblclick', handleDblClick, { capture: true });
     canvasHTML.addEventListener('wheel', handleWheelWrapper, { passive: false, capture: true });
 
     const svgContent = canvasHTML.querySelector('#cvat_canvas_content');
@@ -114,7 +106,6 @@ export function bindCanvasEventHandlers(
         canvasHTML.removeEventListener('canvas.moved', handleCursorMoved as EventListener);
         canvasHTML.removeEventListener('canvas.edited', handleEditDone);
         canvasHTML.removeEventListener('mousedown', handleMouseDown, { capture: true });
-        canvasHTML.removeEventListener('dblclick', handleDblClick, { capture: true });
         canvasHTML.removeEventListener('wheel', handleWheelWrapper, { capture: true });
         if (svgContent) {
             svgContent.removeEventListener('mousedown', handleMouseDownBubble, { capture: false });
