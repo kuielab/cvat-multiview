@@ -15,7 +15,7 @@ import {
     resetCanvas,
     activateObject,
     updateAnnotationsAsync,
-    removeObject as removeObjectAction,
+    removeObjectAsync,
 } from 'actions/annotation-actions';
 import { filterAnnotations } from 'utils/filter-annotations';
 import { bindCanvasEventHandlers, CanvasEventHandlers } from './multiview-canvas-events';
@@ -133,8 +133,10 @@ function prepareDisplayAnnotations(params: {
         if (ann.points && Array.isArray(ann.points)) {
             const transformedPoints = transformPointsForDisplay(
                 ann.points,
+                transform.canvasWidth,
                 transform.canvasHeight,
                 transform.taskHeight,
+                transform.taskWidth,
             );
             return cloneObjectStateForDisplay(ann, transformedPoints);
         }
@@ -206,6 +208,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         multiviewData,
         samplesRequired: STABLE_VIDEO_SAMPLES_REQUIRED,
         maxWaitMs: STABLE_VIDEO_MAX_WAIT_MS,
+        allowTimeoutFallback: false,
         debug: debugMultiview,
     });
 
@@ -313,13 +316,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             // Pre-clamp in canvas space to prevent shrinkage from aspect ratio mismatch
             state.points = clampPointsToCanvasBounds(
                 state.points,
-                transformParams.taskWidth,
+                transformParams.canvasWidth,
                 transformParams.canvasHeight,
             );
             state.points = transformPointsForStorage(
                 state.points,
+                transformParams.canvasWidth,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
+                transformParams.taskWidth,
             );
 
             // Normalize and enforce minimum dimensions in task space for new shapes
@@ -595,14 +600,16 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             if (!rotation) {
                 updatedPoints = clampPointsToCanvasBounds(
                     updatedPoints,
-                    transformParams.taskWidth,
+                    transformParams.canvasWidth,
                     transformParams.canvasHeight,
                 );
             }
             updatedPoints = transformPointsForStorage(
                 updatedPoints,
+                transformParams.canvasWidth,
                 transformParams.canvasHeight,
                 transformParams.taskHeight,
+                transformParams.taskWidth,
             );
 
             // Normalize and enforce minimum dimensions in task space.
@@ -629,7 +636,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [dispatch]);
 
     /**
-     * Handle keydown event - Delete key to remove activated annotation
+     * Handle keydown event - Delete key to remove activated annotation.
+     * Uses removeObjectAsync directly for reliable deletion, bypassing the
+     * RemoveConfirmComponent flow which can have timing issues when both
+     * this handler and the react-hotkeys handler in ObjectsListContainer fire.
      */
     const onKeyDown = useCallback((event: KeyboardEvent): void => {
         const refs = stateRefs.current;
@@ -649,15 +659,17 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
         if (!activatedState) return;
 
+        // Prevent default behavior and stop propagation FIRST to prevent
+        // the react-hotkeys handler in ObjectsListContainer from also handling
+        // this event (which would cause a double-delete attempt)
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
         // Check if object is locked (shift key forces delete of locked objects)
         const force = event.shiftKey;
 
-        // Dispatch remove action
-        dispatch(removeObjectAction(activatedState, force));
-
-        // Prevent default behavior
-        event.preventDefault();
-        event.stopPropagation();
+        // Use removeObjectAsync directly for reliable deletion
+        dispatch(removeObjectAsync(activatedState, force));
     }, [canvasInstance, dispatch]);
 
     // Update event handler refs whenever callbacks change
@@ -902,6 +914,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
+        if (canvasContainer) {
+            const w = canvasContainer.clientWidth;
+            const h = canvasContainer.clientHeight;
+            if (w <= 0 || h <= 0) {
+                logDebug('setup skipped: container has zero size', { w, h });
+                return;
+            }
+        }
+
         // Do not run setup until video dimensions are stable across samples.
         // This avoids transient videoWidth/videoHeight values during initial decode.
         const stableVideoDims = getStableVideoDims();
@@ -1025,10 +1046,20 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         }
     }, [canvasInstance, activatedStateID, activatedAttributeID, annotations]);
 
-    // Note: Removed the activeControl effect that was calling canvasInstance.cancel()
-    // when activeControl changed to a draw mode. This was causing the drawing to be
-    // immediately canceled after starting. The canvas mode is properly managed by
-    // the draw-shape-popover which calls canvasInstance.draw() to start drawing.
+    // When activeControl transitions away from a draw mode back to CURSOR,
+    // explicitly disable drawing so the canvas cleans up draw state (crosshair, etc.).
+    // Note: We only call draw({ enabled: false }) when LEAVING draw mode, not when entering.
+    // Entering draw mode is handled by the draw-shape-popover which calls canvasInstance.draw().
+    useEffect(() => {
+        if (!canvasInstance) return;
+        if (!isDrawOperationRequested(activeControl)) {
+            try {
+                canvasInstance.draw({ enabled: false });
+            } catch {
+                // Canvas might not be in a drawable state
+            }
+        }
+    }, [canvasInstance, activeControl]);
 
     // This component doesn't render anything - it just manages the canvas
     return null;

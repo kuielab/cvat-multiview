@@ -5,6 +5,7 @@
 import { ObjectState } from 'cvat-core-wrapper';
 
 export interface CoordinateTransform {
+    canvasWidth: number;
     canvasHeight: number;
     taskHeight: number;
     taskWidth: number;
@@ -26,20 +27,24 @@ export function createVideoProportionalFrameData(
 
     const taskWidth = frameData.width;
     const taskHeight = frameData.height;
-    const videoAspect = videoWidth / videoHeight;
+    if (!taskWidth || !taskHeight) {
+        return null;
+    }
 
-    // Calculate height that matches video aspect ratio at task width
-    const canvasHeight = Math.round(taskWidth / videoAspect);
-
-    // If aspect ratios are close (within 1%), no transformation needed
-    const taskAspect = taskWidth / taskHeight;
-    if (Math.abs(videoAspect - taskAspect) < 0.01) {
+    // Compute scaled canvas dimensions based on task->video scale.
+    // This allows both X and Y scaling when task dimensions differ from video.
+    const canvasWidth = Math.round(videoWidth);
+    const canvasHeight = Math.round(videoHeight);
+    if (!Number.isFinite(canvasWidth) || !Number.isFinite(canvasHeight) || canvasWidth <= 0 || canvasHeight <= 0) {
         return null;
     }
 
     // Create a proxy frameData with adjusted dimensions
     const proxyFrameData = new Proxy(frameData, {
         get(target, prop) {
+            if (prop === 'width') {
+                return canvasWidth;
+            }
             if (prop === 'height') {
                 return canvasHeight;
             }
@@ -50,6 +55,7 @@ export function createVideoProportionalFrameData(
     return {
         frameData: proxyFrameData,
         transform: {
+            canvasWidth,
             canvasHeight,
             taskHeight,
             taskWidth,
@@ -57,28 +63,40 @@ export function createVideoProportionalFrameData(
     };
 }
 
-function transformYForStorage(y: number, canvasHeight: number, taskHeight: number): number {
-    return y * (taskHeight / canvasHeight);
+function transformForStorage(value: number, canvas: number, task: number): number {
+    return value * (task / canvas);
 }
 
-function transformYForDisplay(y: number, canvasHeight: number, taskHeight: number): number {
-    return y * (canvasHeight / taskHeight);
+function transformForDisplay(value: number, canvas: number, task: number): number {
+    return value * (canvas / task);
 }
 
 export function transformPointsForStorage(
     points: number[],
+    canvasWidth: number,
     canvasHeight: number,
     taskHeight: number,
+    taskWidth: number,
 ): number[] {
-    return points.map((val, idx) => (idx % 2 === 1 ? transformYForStorage(val, canvasHeight, taskHeight) : val));
+    return points.map((val, idx) => (
+        idx % 2 === 1 ?
+            transformForStorage(val, canvasHeight, taskHeight) :
+            transformForStorage(val, canvasWidth, taskWidth)
+    ));
 }
 
 export function transformPointsForDisplay(
     points: number[],
+    canvasWidth: number,
     canvasHeight: number,
     taskHeight: number,
+    taskWidth: number,
 ): number[] {
-    return points.map((val, idx) => (idx % 2 === 1 ? transformYForDisplay(val, canvasHeight, taskHeight) : val));
+    return points.map((val, idx) => (
+        idx % 2 === 1 ?
+            transformForDisplay(val, canvasHeight, taskHeight) :
+            transformForDisplay(val, canvasWidth, taskWidth)
+    ));
 }
 
 export function clampPointsToCanvasBounds(

@@ -189,8 +189,8 @@ export default function VideoCanvas(props: Props): JSX.Element {
 
     /**
      * Pan support when zoomed in.
-     * - Middle button (1), Right button (2), Alt+Left: always pan when zoomed
-     * - Left button (0) on background: pan when zoomed (skip shapes & draw mode)
+     * - Middle button (1), Right button (2), Alt+Left (0): pan when zoomed
+     * - Left button (0) without Alt: NOT used for panning (allows drawing and shape interaction)
      * Listens on the container so pan works over both video and canvas overlay.
      */
     useEffect(() => {
@@ -201,37 +201,13 @@ export default function VideoCanvas(props: Props): JSX.Element {
             const currentZoom = zoomStateRef.current;
             if (!currentZoom || currentZoom.level <= 1.0) return;
 
-            // Middle button (1), Right button (2), Alt+Left (0) - always pan when zoomed
+            // Middle button (1), Right button (2), Alt+Left (0) - pan when zoomed
             if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
                 e.preventDefault();
                 isPanningRef.current = true;
                 panDistanceRef.current = 0;
                 panStartRef.current = { x: e.clientX, y: e.clientY };
                 return;
-            }
-
-            // Left click (button 0) without Alt - pan on background when zoomed
-            if (e.button === 0) {
-                const target = e.target as Element;
-
-                // Don't pan if clicking on a shape or its interactive parts
-                if (target.closest('.cvat_canvas_shape') ||
-                    target.closest('.svg_select_points') ||
-                    target.closest('.svg_select_points_rot')) {
-                    return;
-                }
-
-                // Don't pan if canvas is in draw mode (crosshair cursor on SVG)
-                const svgEl = container.querySelector('.annotation-canvas-overlay svg');
-                if (svgEl && (svgEl as HTMLElement).style.cursor === 'crosshair') {
-                    return;
-                }
-
-                e.preventDefault();
-                e.stopPropagation();
-                isPanningRef.current = true;
-                panDistanceRef.current = 0;
-                panStartRef.current = { x: e.clientX, y: e.clientY };
             }
         };
 

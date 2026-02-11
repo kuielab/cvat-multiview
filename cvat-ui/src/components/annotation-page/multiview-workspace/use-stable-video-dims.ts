@@ -17,6 +17,19 @@ type StableVideoDimsState = {
     firstSampleTs: number | null;
 };
 
+function isCloseDims(
+    a: { width: number; height: number },
+    b: { width: number; height: number },
+    maxAbsPx = 1,
+    maxRel = 0.001,
+): boolean {
+    const dw = Math.abs(a.width - b.width);
+    const dh = Math.abs(a.height - b.height);
+    const rw = a.width > 0 ? dw / a.width : dw;
+    const rh = a.height > 0 ? dh / a.height : dh;
+    return dw <= maxAbsPx && dh <= maxAbsPx && rw <= maxRel && rh <= maxRel;
+}
+
 function getVideoDimensionsFromMetadata(
     multiviewData: { videos: Record<string, { width: number; height: number }> | null } | null,
     activeViewId: number,
@@ -36,6 +49,7 @@ export function useStableVideoDims(params: {
     multiviewData: { videos: Record<string, { width: number; height: number }> | null } | null;
     samplesRequired?: number;
     maxWaitMs?: number;
+    allowTimeoutFallback?: boolean;
     debug?: boolean;
 }): {
     getStableVideoDims: () => { width: number; height: number } | null;
@@ -47,6 +61,7 @@ export function useStableVideoDims(params: {
         multiviewData,
         samplesRequired = 2,
         maxWaitMs = 800,
+        allowTimeoutFallback = false,
         debug = false,
     } = params;
 
@@ -133,6 +148,18 @@ export function useStableVideoDims(params: {
 
         const now = Date.now();
 
+        const metadataDims = getVideoDimensionsFromMetadata(multiviewData, activeViewId);
+        if (metadataDims) {
+            ref.width = metadataDims.width;
+            ref.height = metadataDims.height;
+            ref.source = 'metadata';
+            if (debug) {
+                // eslint-disable-next-line no-console
+                console.debug('[MultiviewCanvas] Using metadata dims', ref.width, ref.height);
+            }
+            return metadataDims;
+        }
+
         if (videoElement && videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             const sampleWidth = videoElement.videoWidth;
             const sampleHeight = videoElement.videoHeight;
@@ -140,6 +167,16 @@ export function useStableVideoDims(params: {
             if (sampleWidth > 0 && sampleHeight > 0) {
                 if (ref.firstSampleTs === null) {
                     ref.firstSampleTs = now;
+                }
+
+                // If already locked and new sample is only a tiny jitter, keep the locked size.
+                if (ref.source === 'video' && ref.width > 0 && ref.height > 0) {
+                    if (isCloseDims(
+                        { width: ref.width, height: ref.height },
+                        { width: sampleWidth, height: sampleHeight },
+                    )) {
+                        return { width: ref.width, height: ref.height };
+                    }
                 }
 
                 if (ref.width === sampleWidth && ref.height === sampleHeight && ref.source === 'video') {
@@ -165,7 +202,7 @@ export function useStableVideoDims(params: {
                     return { width: ref.width, height: ref.height };
                 }
 
-                if (ref.firstSampleTs !== null && now - ref.firstSampleTs >= maxWaitMs) {
+                if (allowTimeoutFallback && ref.firstSampleTs !== null && now - ref.firstSampleTs >= maxWaitMs) {
                     ref.width = sampleWidth;
                     ref.height = sampleHeight;
                     ref.source = 'video';
@@ -177,20 +214,6 @@ export function useStableVideoDims(params: {
                 }
 
                 return null;
-            }
-        }
-
-        if (!videoElement) {
-            const metadataDims = getVideoDimensionsFromMetadata(multiviewData, activeViewId);
-            if (metadataDims) {
-                ref.width = metadataDims.width;
-                ref.height = metadataDims.height;
-                ref.source = 'metadata';
-                if (debug) {
-                    // eslint-disable-next-line no-console
-                    console.debug('[MultiviewCanvas] Using metadata dims (no video element)', ref.width, ref.height);
-                }
-                return metadataDims;
             }
         }
 
