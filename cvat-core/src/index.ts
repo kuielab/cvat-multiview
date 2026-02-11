@@ -173,6 +173,18 @@ export default interface CVATCore {
     frames: {
         getMeta: (type: 'task' | 'job', id: number) => Promise<FramesMetaData>;
     };
+    multiviewFrames: {
+        getMeta: (taskId: number, viewId: number) => Promise<FramesMetaData>;
+        getFrame: (params: {
+            taskId: number;
+            viewId: number;
+            frameNumber: number;
+            jobStartFrame: number;
+            isPlaying: boolean;
+            step: number;
+        }) => Promise<{ renderWidth: number; renderHeight: number; imageData: ImageBitmap | Blob }>;
+        clearCache: (taskId?: number, viewId?: number) => void;
+    };
     requests: {
         list: () => Promise<PaginatedResource<Request>>;
         listen: (

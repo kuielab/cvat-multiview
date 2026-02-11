@@ -7,31 +7,22 @@ import { useSelector } from 'react-redux';
 import { CombinedState } from 'reducers';
 
 import VideoCanvas from './video-canvas';
-import { ZoomState } from './multiview-workspace';
 
 interface Props {
     activeView: number;
     onViewSelect: (view: number) => void;
-    playbackRate?: number;
-    onCanvasContainerReady?: (container: HTMLDivElement | null, videoElement: HTMLVideoElement | null) => void;
-    onVideoRef?: (viewId: number, video: HTMLVideoElement | null) => void;
-    zoomState?: ZoomState;
+    onCanvasContainerReady?: (container: HTMLDivElement | null) => void;
     onPan?: (dx: number, dy: number) => void;
     onZoomReset?: () => void;
-    renderMode?: 'video' | 'canvas';
 }
 
 interface ViewConfig {
     viewId: number;
-    url: string;
-    fps: number;
 }
 
 export default function MultiviewVideoGrid(props: Props): JSX.Element {
-    const { activeView, onViewSelect, playbackRate, onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset, renderMode } = props;
+    const { activeView, onViewSelect, onCanvasContainerReady, onPan, onZoomReset } = props;
 
-    const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
-    const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
     // Collect available views dynamically (supports 1-10 views)
@@ -44,8 +35,6 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
             if (viewData?.url) {
                 availableViews.push({
                     viewId: i,
-                    url: viewData.url,
-                    fps: viewData.fps || 30,
                 });
             }
         }
@@ -76,18 +65,10 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
         >
             <VideoCanvas
                 viewId={view.viewId}
-                frameNumber={frameNumber}
-                videoUrl={view.url}
-                fps={view.fps}
                 isActive={activeView === view.viewId}
-                playing={playing}
-                playbackRate={playbackRate}
                 onCanvasContainerReady={activeView === view.viewId ? onCanvasContainerReady : undefined}
-                onVideoRef={onVideoRef}
-                zoomState={activeView === view.viewId ? zoomState : undefined}
                 onPan={activeView === view.viewId ? onPan : undefined}
                 onZoomReset={activeView === view.viewId ? onZoomReset : undefined}
-                renderMode={renderMode}
             />
         </div>
     );

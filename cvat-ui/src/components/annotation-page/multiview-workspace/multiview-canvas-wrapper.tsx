@@ -21,16 +21,11 @@ import { filterAnnotations } from 'utils/filter-annotations';
 import { bindCanvasEventHandlers, CanvasEventHandlers } from './multiview-canvas-events';
 import { runSetupPipeline } from './multiview-canvas-setup';
 import {
-    CoordinateTransform,
     clampPointsToCanvasBounds,
     cloneObjectStateForDisplay,
-    createVideoProportionalFrameData,
     enforceMinimumShapeDimensions,
     normalizeAndEnforceTaskSpaceDimensions,
-    transformPointsForDisplay,
-    transformPointsForStorage,
 } from './multiview-canvas-utils';
-import { useStableVideoDims } from './use-stable-video-dims';
 import { fetchMultiviewFrameImage } from './multiview-frame-provider';
 
 // Draw-related modes that should not be interrupted
@@ -90,14 +85,7 @@ function shouldPreserveDrawState(canvasInstance: Canvas | null, activeControl: A
 
 interface Props {
     canvasContainer: HTMLDivElement | null;
-    videoElement: HTMLVideoElement | null;
     activeViewId: number;
-    onZoom?: (deltaY: number, clientX: number, clientY: number) => void;
-    /** Current CSS zoom level (1.0 = no zoom). Used to notify parent on resize while zoomed. */
-    zoomLevel?: number;
-    /** Called when container resizes while zoomed, so parent can adjust CSS translate. */
-    onContainerResize?: (oldW: number, oldH: number, newW: number, newH: number) => void;
-    renderMode?: 'video' | 'canvas';
 }
 
 function prepareDisplayAnnotations(params: {
@@ -105,14 +93,12 @@ function prepareDisplayAnnotations(params: {
     frameNumber: number;
     workspace: Workspace;
     activeViewId: number;
-    transform: CoordinateTransform | null;
 }): ObjectState[] {
     const {
         annotations,
         frameNumber,
         workspace,
         activeViewId,
-        transform,
     } = params;
 
     const filtered = filterAnnotations(annotations, {
@@ -127,27 +113,26 @@ function prepareDisplayAnnotations(params: {
         return stateViewId === activeViewId;
     });
 
-    if (!transform) {
-        return filtered;
-    }
+    return filtered.map((ann: any) => (
+        ann.points && Array.isArray(ann.points) ?
+            cloneObjectStateForDisplay(ann, ann.points) : ann
+    ));
+}
 
-    return filtered.map((ann: any) => {
-        if (ann.points && Array.isArray(ann.points)) {
-            const transformedPoints = transformPointsForDisplay(
-                ann.points,
-                transform.canvasWidth,
-                transform.canvasHeight,
-                transform.taskHeight,
-                transform.taskWidth,
-            );
-            return cloneObjectStateForDisplay(ann, transformedPoints);
-        }
-        return ann;
-    });
+function getViewDimensions(
+    multiviewData: any,
+    viewId: number,
+    frameData: any,
+): { width: number; height: number } {
+    const viewKey = `view${viewId}`;
+    const viewData = multiviewData?.videos?.[viewKey];
+    const width = viewData?.width || frameData?.width || 0;
+    const height = viewData?.height || frameData?.height || 0;
+    return { width, height };
 }
 
 export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null {
-    const { canvasContainer, videoElement, activeViewId, onZoom, zoomLevel = 1.0, onContainerResize, renderMode = 'video' } = props;
+    const { canvasContainer, activeViewId } = props;
     const dispatch = useDispatch();
     const mountedRef = useRef(false);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -160,25 +145,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     // that would otherwise leave canvasSize stale and cause bbox misalignment.
     const viewportLockedRef = useRef(false);
 
-    // Ref for current CSS zoom level - used in ResizeObserver to detect whether
-    // to notify parent of resize-while-zoomed for CSS translate adjustment.
-    const zoomLevelRef = useRef(zoomLevel);
-    zoomLevelRef.current = zoomLevel;
-
-    // Track previous container dimensions for resize-while-zoomed translate adjustment
     const prevContainerSizeRef = useRef<{ width: number; height: number } | null>(null);
 
-    // Ref for onContainerResize callback to avoid re-registering ResizeObserver
-    const onContainerResizeRef = useRef(onContainerResize);
-    onContainerResizeRef.current = onContainerResize;
-
-    // Track coordinate transformation parameters for aspect ratio correction
-    // When video aspect ratio differs from task metadata, we need to transform coordinates
-    // taskWidth is included for boundary clamping (X doesn't scale but needs a bound)
-    const transformParamsRef = useRef<CoordinateTransform | null>(null);
-
-    const STABLE_VIDEO_SAMPLES_REQUIRED = 3;
-    const STABLE_VIDEO_MAX_WAIT_MS = 1500;
+    // Canvas-only mode: frame dimensions come directly from metadata.
 
     // Redux state selectors
     const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
@@ -194,6 +163,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const activatedAttributeID = useSelector((state: CombinedState) => state.annotation.annotations.activatedAttributeID);
     const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
+    const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
 
     const debugMultiview = typeof window !== 'undefined' &&
         (window as any).CVAT_DEBUG_MULTIVIEW === true;
@@ -204,22 +174,15 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         console.debug(`[MultiviewCanvas] ${message}`, payload || {});
     }, [debugMultiview]);
 
-    const { getStableVideoDims, version: videoDimsVersion } = useStableVideoDims({
-        videoElement,
-        activeViewId,
-        multiviewData,
-        samplesRequired: STABLE_VIDEO_SAMPLES_REQUIRED,
-        maxWaitMs: STABLE_VIDEO_MAX_WAIT_MS,
-        allowTimeoutFallback: false,
-        debug: debugMultiview,
-    });
-
     const createFrameDataFromMultiview = useCallback((
         baseFrameData: any,
         taskId: number | null,
         viewId: number,
         renderWidth: number,
         renderHeight: number,
+        jobStartFrame: number,
+        isPlaying: boolean,
+        step: number,
     ) => {
         const proxy = new Proxy(baseFrameData, {
             get(target, prop, receiver) {
@@ -237,8 +200,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                                     taskId,
                                     viewId,
                                     frameNumber: target.number,
-                                    renderWidthFallback: renderWidth,
-                                    renderHeightFallback: renderHeight,
+                                    jobStartFrame,
+                                    isPlaying,
+                                    step,
                                 });
                             } catch (error) {
                                 // Fallback to base frame data if fetch fails
@@ -304,7 +268,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         onMouseDown: null,
         onMouseDownBubble: null,
         onKeyDown: null,
-        onWheel: null,
     });
 
     /**
@@ -353,28 +316,24 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
         // Transform coordinates from canvas space to task space if aspect ratio differs
         // This ensures annotations are stored in the original video coordinate system
-        const transformParams = transformParamsRef.current;
-        if (transformParams && state.points && Array.isArray(state.points)) {
-            // Pre-clamp in canvas space to prevent shrinkage from aspect ratio mismatch
+        const currentFrameData = refs.frameData;
+        if (state.points && Array.isArray(state.points) && currentFrameData) {
+            const { width, height } = getViewDimensions(
+                refs.multiviewData,
+                refs.activeViewId,
+                currentFrameData,
+            );
             state.points = clampPointsToCanvasBounds(
                 state.points,
-                transformParams.canvasWidth,
-                transformParams.canvasHeight,
-            );
-            state.points = transformPointsForStorage(
-                state.points,
-                transformParams.canvasWidth,
-                transformParams.canvasHeight,
-                transformParams.taskHeight,
-                transformParams.taskWidth,
+                width,
+                height,
             );
 
-            // Normalize and enforce minimum dimensions in task space for new shapes
             if (state.shapeType === 'rectangle' && state.points.length === 4 && !state.rotation) {
                 state.points = normalizeAndEnforceTaskSpaceDimensions(
                     state.points,
-                    transformParams.taskWidth,
-                    transformParams.taskHeight,
+                    width,
+                    height,
                 );
             }
         }
@@ -552,24 +511,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     }, [canvasInstance, dispatch]);
 
     /**
-     * Handle wheel event on canvas overlay.
-     * Block the canvas's internal SVG zoom (which would only zoom the canvas
-     * without zooming the video) and relay the event to the parent's CSS zoom
-     * handler that scales the entire video+canvas container together.
-     */
-    const handleWheel = useCallback((e: WheelEvent): void => {
-        if (renderMode === 'canvas') {
-            return;
-        }
-        e.preventDefault();
-        e.stopPropagation();
-        // Relay to parent for CSS-based zoom of video + canvas container
-        if (onZoom) {
-            onZoom(e.deltaY, e.clientX, e.clientY);
-        }
-    }, [onZoom, renderMode]);
-
-    /**
      * Handle mousedown in bubble phase - this is now a no-op as canvasView.ts
      * has been modified to check for shape elements before enabling canvas drag.
      * Keeping this handler for potential future use or additional multiview-specific logic.
@@ -605,9 +546,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     /**
      * Handle canvas edit done - update annotation
-     * IMPORTANT: The state from event.detail may be a shallow copy (without save() method)
-     * if coordinate transformation was applied. We need to find the original ObjectState
-     * from Redux and update it.
+     * IMPORTANT: The state from event.detail may be a shallow copy (without save() method).
+     * We need to find the original ObjectState from Redux and update it.
      */
     const onCanvasEditDone = useCallback((event: any): void => {
         const refs = stateRefs.current;
@@ -628,7 +568,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // When shapes are very small, CVAT's resize handles (8×8px) overlap the shape
         // body, causing the user to accidentally resize instead of drag. This detects
         // and corrects such accidental resizes by preserving the original dimension.
-        const transformParams = transformParamsRef.current;
         let updatedPoints = points;
         if (!rotation && state.shapeType === 'rectangle' &&
             updatedPoints && Array.isArray(updatedPoints) && updatedPoints.length === 4 &&
@@ -636,36 +575,27 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             updatedPoints = enforceMinimumShapeDimensions(updatedPoints, state.points);
         }
 
-        // Transform coordinates from canvas space back to task space if needed
-        if (transformParams && updatedPoints && Array.isArray(updatedPoints)) {
-            // Pre-clamp in canvas space before converting to task space.
-            // This prevents the backend fitPoints() from shrinking shapes that
-            // extend beyond the canvas boundary due to aspect ratio mismatch.
-            // Skip clamping for rotated shapes (fitPoints also skips them).
+        const currentFrameData = refs.frameData;
+        if (currentFrameData && updatedPoints && Array.isArray(updatedPoints)) {
+            const { width, height } = getViewDimensions(
+                refs.multiviewData,
+                refs.activeViewId,
+                currentFrameData,
+            );
             if (!rotation) {
                 updatedPoints = clampPointsToCanvasBounds(
                     updatedPoints,
-                    transformParams.canvasWidth,
-                    transformParams.canvasHeight,
+                    width,
+                    height,
                 );
             }
-            updatedPoints = transformPointsForStorage(
-                updatedPoints,
-                transformParams.canvasWidth,
-                transformParams.canvasHeight,
-                transformParams.taskHeight,
-                transformParams.taskWidth,
-            );
 
-            // Normalize and enforce minimum dimensions in task space.
-            // This prevents checkShapeArea() from silently rejecting the save
-            // when repeated resizes produce sub-pixel or inverted coordinates.
             if (!rotation && state.shapeType === 'rectangle' &&
                 updatedPoints.length === 4) {
                 updatedPoints = normalizeAndEnforceTaskSpaceDimensions(
                     updatedPoints,
-                    transformParams.taskWidth,
-                    transformParams.taskHeight,
+                    width,
+                    height,
                 );
             }
         }
@@ -734,9 +664,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             onMouseDown: onCanvasMouseDown,
             onMouseDownBubble: onCanvasMouseDownBubble,
             onKeyDown,
-            onWheel: handleWheel,
         };
-    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown, onCanvasMouseDownBubble, onKeyDown, handleWheel]);
+    }, [onCanvasShapeDrawn, onCanvasSetup, onCanvasCancel, onCanvasZoomStart, onCanvasZoomDone, onCanvasDragStart, onCanvasDragDone, onCanvasShapeClicked, onCanvasShapeDeactivated, onCanvasCursorMoved, onCanvasEditDone, onCanvasMouseDown, onCanvasMouseDownBubble, onKeyDown]);
 
     /**
      * Handle view changes - ALWAYS reset canvas mode when switching views
@@ -897,15 +826,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 // CSS zoom transform is additive on top of this baseline.
                 canvasInstance.fit();
 
-                // When zoomed, notify parent so it can adjust CSS translate
-                // to maintain the same content center after resize.
-                if (zoomLevelRef.current > 1.0 && oldSize && onContainerResizeRef.current) {
-                    onContainerResizeRef.current(
-                        oldSize.width, oldSize.height,
-                        containerWidth, containerHeight,
-                    );
-                }
-
                 // Update tracked container size
                 prevContainerSizeRef.current = { width: containerWidth, height: containerHeight };
 
@@ -923,7 +843,7 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         // path for canvas setup. This eliminates a race condition where the mount effect
         // and setup effect could call setup() with different video dimensions / transform
         // params, causing bbox position misalignment on page refresh.
-        // The setup effect will fire once frameData, videoElement, and annotations are ready.
+        // The setup effect will fire once frameData and annotations are ready.
 
         return () => {
             // Only cancel if NOT in draw mode AND no draw operation is requested
@@ -968,17 +888,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             }
         }
 
-        // Do not run setup until video dimensions are stable across samples.
-        // This avoids transient videoWidth/videoHeight values during initial decode.
-        const stableVideoDims = getStableVideoDims();
-        if (!stableVideoDims) {
-            logDebug('setup skipped: video dims not stable', {
-                frame: frameNumber,
-                viewId: activeViewId,
-            });
-            return;
-        }
-
         // Skip setup if canvas is in draw mode or draw operation is requested
         // This preserves active drawing state - canvas will be updated when drawing completes
         if (shouldPreserveDrawState(canvasInstance, activeControl)) {
@@ -995,37 +904,21 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             setupCompletedRef.current = false;
         }
 
-        const transformResult = createVideoProportionalFrameData(
-            frameData,
-            stableVideoDims.width,
-            stableVideoDims.height,
+        let effectiveFrameData = frameData;
+        const taskId = jobInstance?.taskId ?? null;
+        const jobStartFrame = jobInstance?.startFrame || 0;
+        const step = (jobInstance as any)?.frameStep || 1;
+        const { width, height } = getViewDimensions(multiviewData, activeViewId, frameData);
+        effectiveFrameData = createFrameDataFromMultiview(
+            effectiveFrameData,
+            taskId,
+            activeViewId,
+            width,
+            height,
+            jobStartFrame,
+            playing,
+            step,
         );
-        logDebug('transform computed', {
-            taskWidth: frameData?.width,
-            taskHeight: frameData?.height,
-            videoWidth: stableVideoDims.width,
-            videoHeight: stableVideoDims.height,
-            canvasHeight: transformResult?.transform.canvasHeight,
-        });
-
-        // Store transform params for coordinate transformation on annotation save
-        if (transformResult) {
-            transformParamsRef.current = transformResult.transform;
-        } else {
-            transformParamsRef.current = null;
-        }
-
-        let effectiveFrameData = transformResult ? transformResult.frameData : frameData;
-        if (renderMode === 'canvas') {
-            const taskId = jobInstance?.taskId ?? null;
-            effectiveFrameData = createFrameDataFromMultiview(
-                effectiveFrameData,
-                taskId,
-                activeViewId,
-                stableVideoDims.width,
-                stableVideoDims.height,
-            );
-        }
 
         const isInitialSetup = prevSetupViewIdRef.current === null;
         const displayAnnotations = prepareDisplayAnnotations({
@@ -1033,7 +926,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             frameNumber,
             workspace,
             activeViewId,
-            transform: transformResult ? transformResult.transform : null,
         });
 
         runSetupPipeline({
@@ -1066,7 +958,20 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
         // Always update prevSetupViewIdRef after processing
         prevSetupViewIdRef.current = activeViewId;
-    }, [canvasInstance, canvasContainer, frameData, annotations, curZLayer, activeViewId, frameNumber, workspace, activeControl, videoDimsVersion, getStableVideoDims]);
+    }, [
+        canvasInstance,
+        canvasContainer,
+        frameData,
+        annotations,
+        curZLayer,
+        activeViewId,
+        frameNumber,
+        workspace,
+        activeControl,
+        playing,
+        jobInstance,
+        multiviewData,
+    ]);
 
     /**
      * Update canvas viewId when active view changes

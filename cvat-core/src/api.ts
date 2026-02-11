@@ -17,6 +17,7 @@ import implementProject from './project-implementation';
 import { Attribute, Label } from './labels';
 import MLModel from './ml-model';
 import { FrameData, FramesMetaData } from './frames';
+import { getMultiviewFrame, getMultiviewFramesMeta, clearMultiviewFramesCache } from './multiview-frames';
 import CloudStorage from './cloud-storage';
 import Organization from './organization';
 import Webhook from './webhook';
@@ -171,6 +172,19 @@ function build(): CVATCore {
             async getMeta(type, id) {
                 const result = await PluginRegistry.apiWrapper(cvat.frames.getMeta, type, id);
                 return result;
+            },
+        },
+        multiviewFrames: {
+            async getMeta(taskId, viewId) {
+                const result = await PluginRegistry.apiWrapper(cvat.multiviewFrames.getMeta, taskId, viewId);
+                return result;
+            },
+            async getFrame(params) {
+                const result = await PluginRegistry.apiWrapper(cvat.multiviewFrames.getFrame, params);
+                return result;
+            },
+            clearCache(taskId?: number, viewId?: number) {
+                clearMultiviewFramesCache(taskId, viewId);
             },
         },
         users: {
@@ -489,6 +503,7 @@ function build(): CVATCore {
     cvat.assets = Object.freeze(cvat.assets);
     cvat.jobs = Object.freeze(cvat.jobs);
     cvat.frames = Object.freeze(cvat.frames);
+    cvat.multiviewFrames = Object.freeze(cvat.multiviewFrames);
     cvat.users = Object.freeze(cvat.users);
     cvat.plugins = Object.freeze(cvat.plugins);
     cvat.lambda = Object.freeze(cvat.lambda);

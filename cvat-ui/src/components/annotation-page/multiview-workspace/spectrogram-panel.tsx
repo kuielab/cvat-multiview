@@ -21,11 +21,10 @@ interface MultiviewVideos {
 interface Props {
     audioEngine: MultiviewAudioEngine | null;
     onEngineReady?: (engine: MultiviewAudioEngine) => void;
-    renderMode?: 'video' | 'canvas';
 }
 
 export default function SpectrogramPanel(props: Props): JSX.Element {
-    const { audioEngine: externalEngine, onEngineReady, renderMode = 'video' } = props;
+    const { audioEngine: externalEngine, onEngineReady } = props;
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -38,6 +37,7 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
     const [loadingStatus, setLoadingStatus] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [audioDuration, setAudioDuration] = useState(0);
+    const currentTimeRef = useRef<number>(0);
 
     const dispatch = useDispatch();
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
@@ -258,15 +258,8 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         if (!playing || !spectrogramData) return;
 
         let animationId: number;
-        // Get the primary video element to read currentTime directly
-        const primaryVideo = document.querySelector('.multiview-video') as HTMLVideoElement;
-
         const animate = (): void => {
-            if (renderMode === 'canvas') {
-                drawPlayheadOnly(currentTime);
-            } else if (primaryVideo && !primaryVideo.paused) {
-                drawPlayheadOnly(primaryVideo.currentTime);
-            }
+            drawPlayheadOnly(currentTimeRef.current);
             animationId = requestAnimationFrame(animate);
         };
 
@@ -324,19 +317,12 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         setLoadingStatus('Collecting video sources...');
 
         try {
-            // Prefer metadata URLs to avoid DOM dependence (canvas render mode)
+            // Prefer metadata URLs to avoid DOM dependence
             const urlsFromMetadata = multiviewData?.videos ?
                 Object.values(multiviewData.videos)
                     .map((v) => v?.url)
                     .filter((src): src is string => !!src) : [];
-
-            // Fallback to DOM video elements if metadata is missing
-            const videoElements = Array.from(
-                document.querySelectorAll('.multiview-video'),
-            ) as HTMLVideoElement[];
-            const urlsFromDom = videoElements.map((v) => v.src).filter((src) => src);
-
-            const urls = urlsFromMetadata.length ? urlsFromMetadata : urlsFromDom;
+            const urls = urlsFromMetadata;
 
             if (urls.length === 0) {
                 throw new Error('No video URLs available');
@@ -496,3 +482,6 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         </div>
     );
 }
+    useEffect(() => {
+        currentTimeRef.current = currentTime;
+    }, [currentTime]);
