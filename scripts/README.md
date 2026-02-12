@@ -28,14 +28,14 @@ Hybrid Scaling 방식으로 bbox 비율을 보존하면서 위치를 정확히 �
 bbox 좌표 범위로 변환 필요 여부를 자동 판단하며, 멱등성을 보장합니다.
 
 ```bash
-# 전체 일괄 마이그레이션 (권장):
-bash scripts/migration/migrate_v1.sh --user admin --password admin123
+# 전체 일괄 마이그레이션 (권장, Direct DB):
+bash scripts/migration/migrate_v1.sh
 
 # Dry-run (확인만):
-bash scripts/migration/migrate_v1.sh --user admin --password admin123 --dry-run
+bash scripts/migration/migrate_v1.sh --dry-run
 
 # 특정 job만:
-bash scripts/migration/migrate_v1.sh --user admin --password admin123 --job-ids 7,8,9
+bash scripts/migration/migrate_v1.sh --job-ids 7,8,9
 ```
 
 상세 문서: [`migration/README.md`](migration/README.md)

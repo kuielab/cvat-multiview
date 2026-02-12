@@ -2,19 +2,18 @@
 #
 # migrate_v1: Master -> Refactor annotation coordinate batch migration
 #
-# Copies migrate_v1.py into cvat_server container and runs batch conversion
-# on ALL jobs. Exports each job's annotations, converts coordinates from
-# master's 1920x1080 to actual video dimensions, and uploads back.
+# Copies migrate_v1.py into cvat_server container and runs direct DB conversion.
+# No HTTP export/import — operates directly on Django ORM.
 #
 # Usage:
 #   # Dry-run (check what would be converted):
-#   bash scripts/migration/migrate_v1.sh --user admin --password admin123 --dry-run
+#   bash scripts/migration/migrate_v1.sh --dry-run
 #
 #   # Actual migration (all jobs):
-#   bash scripts/migration/migrate_v1.sh --user admin --password admin123
+#   bash scripts/migration/migrate_v1.sh
 #
 #   # Specific jobs only:
-#   bash scripts/migration/migrate_v1.sh --user admin --password admin123 --job-ids 7,8,9
+#   bash scripts/migration/migrate_v1.sh --job-ids 7,8,9
 #
 
 set -euo pipefail
@@ -49,7 +48,6 @@ echo ""
 MSYS_NO_PATHCONV=1 docker exec "$CONTAINER" python \
     "$REMOTE_DIR/migrate_v1.py" \
     --all-jobs \
-    --server http://localhost:8080 \
     "$@"
 
 STATUS=$?
