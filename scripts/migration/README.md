@@ -59,6 +59,15 @@ uniform_scale = sqrt(scale_x * scale_y) = sqrt(0.1667 * 0.2222) = 0.1925
   6. clamp to [0, target_w] x [0, target_h]                   <- 경계 처리
 ```
 
+### 왜 동시에 완벽할 수 없는가
+
+종횡비가 다른 두 프레임 사이에서는 **코너 위치 비율**과 **bbox 비율**을 동시에 보존할 수 없습니다:
+
+- 4개 코너의 % 위치가 고정되면 → width/height가 결정됨 → bbox 비율이 자동 결정
+- bbox 비율을 유지하면 → 코너 위치가 달라짐 (중심은 정확)
+
+이 스크립트는 **bbox 비율 보존**을 우선합니다 (어노테이터의 의도 존중).
+
 ### 변환 필요 여부 판단
 
 `<original_size>`가 아니라 **bbox 좌표 범위**로 판단합니다.
@@ -106,6 +115,14 @@ python scripts/migration/migrate_v1.py \
     --job-id 7 --user admin --password admin123 --upload
 ```
 
+### 수동 해상도 지정
+
+```bash
+python scripts/migration/migrate_v1.py \
+    input.xml output.xml \
+    --target-w 320 --target-h 240
+```
+
 ### 옵션 목록
 
 | 옵션 | 설명 | 기본값 |
@@ -119,24 +136,67 @@ python scripts/migration/migrate_v1.py \
 | `input` / `output` | XML 파일 경로 (단일 모드) | batch 시 불필요 |
 | `--job-id ID` | 단일 job 해상도 자동 감지 | - |
 | `--target-w` / `--target-h` | 수동 해상도 지정 | API 자동 감지 |
+| `--cookies FILE` | cookies.txt 경로 | 자동 탐색 |
 | `--upload` | 변환 후 자동 업로드 (단일 모드) | false |
 
 ---
 
 ## History
 
-### 문제 발견 및 분석
+### 2026-02-12: 문제 발견 및 분석
 
-**증상**: Master에서 export한 annotation을 Refactor task에 import했으나,
-bbox가 캔버스에 표시되지 않음 (1920x1080 좌표가 320x240 캔버스 밖에 위치).
+**증상**: Master에서 export한 annotation을 Refactor task(job 7)에 import했으나,
+bbox가 캔버스에 표시되지 않음.
+
+**조사 과정**:
+1. 브라우저에서 `http://localhost:8080/tasks/7/jobs/7` 확인
+   - Redux에 annotation 데이터는 로드됨 (sidebar "Items: 1" 표시)
+   - 하지만 캔버스에 bbox 안 보임
+2. 원본 annotation 좌표 확인: `xtl=839.34, ytl=715.73` (1920x1080 공간)
+   - 320x240 캔버스 밖에 위치 → 당연히 안 보임
+3. Master/Refactor 양쪽에서 동일 증상 확인
+   - Master: 71개 console error + bbox 안 보임
+   - Refactor: 1개 console error + bbox 안 보임
+4. DB 해상도 확인:
+   - Task 1,2 (Master 생성): DB=1920x1080, 실제=320x240 → **불일치**
+   - Task 5,6,7 (Refactor 생성): DB=320x240, 실제=320x240 → **일치**
 
 **근본 원인**: Docker에 ffprobe 미설치 → `_extract_video_metadata()` fallback → 1920x1080 저장
 
-### 개발 과정
+**해결 선택지 분석**:
+| 방안 | 장점 | 단점 |
+|------|------|------|
+| Master + ffprobe 설치 | 코드 변경 최소 | 기존 task 미해결, 71개 에러, 성능 문제 |
+| **Refactor 유지 + 변환 스크립트** | 근본 해결, 성능/안정성 개선 | 기존 annotation 1회 변환 필요 |
 
-1. **단순 비균등 스케일링**: X÷6, Y÷4.5 독립 스케일링
-   - 문제: bbox 비율 변함 (정사각형 → 세로로 긴 직사각형)
-2. **API 자동화 추가**: CVAT API 해상도 자동 감지, 로그인 인증, 자동 업로드
-3. **Hybrid Scaling (현재 v1)**: 중심점은 비균등, bbox 크기는 기하평균 균등 스케일링
-   - bbox 좌표 범위로 변환 필요 여부 자동 판단 (멱등성)
-   - batch 모드 (`--all-jobs`) + Docker shell wrapper 통합
+→ **Refactor 유지** 결정
+
+### 2026-02-12: migrate_v1 개발 과정
+
+1. **단순 비균등 스케일링**
+   - X÷6, Y÷4.5 (각 축 독립) 스케일링
+   - `<original_size>`, `<multiview><views>`, 모든 `<box>` 좌표 변환
+   - Job 7에 테스트: 92 tracks, 184 boxes 변환 완료
+   - **문제 발견**: bbox 비율이 변함 (정사각형 → 세로로 긴 직사각형)
+     - Master bbox 비율 0.99:1 → 변환 후 0.75:1
+     - 어노테이터가 stretched 화면에서 그린 비율이 보존되지 않음
+
+2. **API 자동화 추가**
+   - CVAT API 자동 해상도 감지 (`--job-id`) 추가
+   - 로그인 인증 (`--user`, `--password`) 추가
+   - 자동 업로드 (`--upload`: DELETE + POST) 추가
+   - Shell wrapper 작성
+   - 변환 로직은 1단계와 동일 (비균등 스케일링)
+
+3. **Hybrid Scaling + batch 모드 (현재)**
+   - **변환 알고리즘 변경**: 비균등 → Hybrid Scaling
+     - 중심점: 비균등 스케일링 (위치 정확)
+     - Bbox 크기: 균등 스케일링 (기하평균, 비율 보존)
+   - `<original_size>` 비교 대신 **bbox 좌표 범위**로 변환 필요 여부 판단
+     - EC2에서 가져온 annotation은 task DB가 320x240이어도 좌표가 1920x1080일 수 있음
+   - batch 모드 (`--all-jobs`) 추가: 모든 job 자동 export → convert → upload
+   - Docker shell wrapper (`migrate_v1.sh`) 통합
+   - 멱등성 보장: 이미 변환된 job은 자동 skip
+   - Job 8, 9에 적용 완료:
+     - Job 8 (`multisensor_home2_09-247-Part1`): 27 tracks, 54 boxes
+     - Job 9 (`multisensor_home1_05-129-Part2`): 92 tracks, 184 boxes
