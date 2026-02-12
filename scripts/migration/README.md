@@ -102,11 +102,11 @@ PyAV로 실제 비디오 프레임 수도 확인하여 더 큰 값을 적용합�
 # Dry-run (변환 대상 확인만, 업로드 안 함)
 bash scripts/migration/migrate_v1.sh --user admin --password admin123 --dry-run
 
-# 실제 마이그레이션 실행 (기본 16 workers)
+# 실제 마이그레이션 실행 (기본 4 workers)
 bash scripts/migration/migrate_v1.sh --user admin --password admin123
 
-# 32개 병렬 워커로 실행
-bash scripts/migration/migrate_v1.sh --user admin --password admin123 --workers 32
+# 워커/동시 export 수 조절
+bash scripts/migration/migrate_v1.sh --user admin --password admin123 --workers 8 --export-concurrency 2
 
 # 특정 job만 마이그레이션
 bash scripts/migration/migrate_v1.sh --user admin --password admin123 --job-ids 7,8,9
@@ -174,7 +174,8 @@ python scripts/migration/migrate_v1.py \
 |------|------|--------|
 | `--all-jobs` | 모든 job 일괄 변환 (batch 모드) | - |
 | `--job-ids IDs` | 특정 job만 변환 (쉼표 구분) | 전체 |
-| `--workers N` | 병렬 워커 수 (16~32 권장) | `16` |
+| `--workers N` | 병렬 워커 수 | `4` |
+| `--export-concurrency N` | 동시 export 요청 수 (RQ 큐 과부하 방지) | `4` |
 | `--dry-run` | 변환 대상 확인만 (업로드 안 함) | false |
 | `--repair-only` | Segment 수정만 (Phase 1만 실행) | false |
 | `--user` | CVAT 사용자명 | 필수 |
@@ -266,3 +267,15 @@ bbox가 캔버스에 표시되지 않음.
    - 타임아웃 증가: export 120s→600s, upload 120s→600s
    - 상세 로깅 추가: Django init 성공/실패, repair 상세, PyAV 에러, 캐시 삭제 건수
    - EC2 1140 jobs 대응: "Unknown internal frame id" 에러 근본 해결
+
+5. **HTTP 409 처리 + Export Semaphore**
+   - CVAT가 이미 queued/running인 export에 409 반환 → rq_id 추출 후 polling
+   - `--export-concurrency` 플래그 추가 (기본 4): RQ 큐 과부하 방지
+   - 기본 workers 16→4로 축소 (RQ worker 1-2개에 맞춤)
+
+6. **코드 리팩토링 (924줄 → 657줄, -29%)**
+   - `_api_get`/`_api_post`/`_api_delete` 3개 → `_api_call` 1개로 통합
+   - 1회 호출 헬퍼 (`_fetch_task_name`, `_get_video_frame_count`) 인라인화
+   - `_print_summary` 인라인화, `extract_xml_from_zip` → `_export_and_extract`에 통합
+   - 섹션 구분 주석, 과도한 docstring, 불필요한 type import 제거
+   - 모듈 docstring 간소화 (Usage 예시는 argparse epilog으로 통합)
