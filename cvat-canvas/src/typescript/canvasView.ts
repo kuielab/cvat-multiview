@@ -1200,59 +1200,49 @@ export class CanvasViewImpl implements CanvasView, Listener {
 
                 onDragEnd();
                 this.draggableShape = null;
-                const { cx, cy } = shape.bbox();
 
-                const dx2 = (startCenter.x - cx) ** 2;
-                const dy2 = (startCenter.y - cy) ** 2;
-                // Minimum drag distance threshold to prevent accidental micro-drags
-                // when clicking to select shapes. A 1-2px mouse movement during click
-                // gets amplified by getScreenCTM().inverse() scale factor, causing
-                // unintended coordinate shifts.
-                const MIN_DRAG_THRESHOLD = 5;
-                if (Math.sqrt(dx2 + dy2) > MIN_DRAG_THRESHOLD) {
-                    if (state.shapeType === 'mask') {
-                        const { points } = state;
-                        const x = Math.trunc(shape.x()) - this.geometry.offset;
-                        const y = Math.trunc(shape.y()) - this.geometry.offset;
-                        points.splice(-4);
-                        points.push(x, y, x + shape.width() - 1, y + shape.height() - 1);
-                        this.onEditDone(state, points);
-                    } else if (state.shapeType === 'skeleton') {
-                        const points = [];
-                        state.elements.forEach((element: any) => {
-                            const elementShape = (shape as SVG.G).children()
-                                .find((child: SVG.Shape) => (
-                                    child.id() === `cvat_canvas_shape_${element.clientID}`
-                                ));
+                if (state.shapeType === 'mask') {
+                    const { points } = state;
+                    const x = Math.trunc(shape.x()) - this.geometry.offset;
+                    const y = Math.trunc(shape.y()) - this.geometry.offset;
+                    points.splice(-4);
+                    points.push(x, y, x + shape.width() - 1, y + shape.height() - 1);
+                    this.onEditDone(state, points);
+                } else if (state.shapeType === 'skeleton') {
+                    const points = [];
+                    state.elements.forEach((element: any) => {
+                        const elementShape = (shape as SVG.G).children()
+                            .find((child: SVG.Shape) => (
+                                child.id() === `cvat_canvas_shape_${element.clientID}`
+                            ));
 
-                            if (elementShape) {
-                                points.push(...this.translateFromCanvas(readPointsFromShape(elementShape)));
-                            }
-                        });
-                        this.onEditDone(state, points);
-                    } else {
-                        // these points does not take into account possible transformations, applied on the element
-                        // so, if any (like rotation) we need to map them to canvas coordinate space
-                        let points = readPointsFromShape(shape);
-                        const { rotation } = shape.transform();
-                        if (rotation) {
-                            points = this.translatePointsFromRotatedShape(shape, points);
+                        if (elementShape) {
+                            points.push(...this.translateFromCanvas(readPointsFromShape(elementShape)));
                         }
-
-                        this.onEditDone(state, this.translateFromCanvas(points));
+                    });
+                    this.onEditDone(state, points);
+                } else {
+                    // these points does not take into account possible transformations, applied on the element
+                    // so, if any (like rotation) we need to map them to canvas coordinate space
+                    let points = readPointsFromShape(shape);
+                    const { rotation } = shape.transform();
+                    if (rotation) {
+                        points = this.translatePointsFromRotatedShape(shape, points);
                     }
 
-                    this.canvas.dispatchEvent(
-                        new CustomEvent('canvas.dragshape', {
-                            bubbles: false,
-                            cancelable: true,
-                            detail: {
-                                state,
-                                duration: Date.now() - start,
-                            },
-                        }),
-                    );
+                    this.onEditDone(state, this.translateFromCanvas(points));
                 }
+
+                this.canvas.dispatchEvent(
+                    new CustomEvent('canvas.dragshape', {
+                        bubbles: false,
+                        cancelable: true,
+                        detail: {
+                            state,
+                            duration: Date.now() - start,
+                        },
+                    }),
+                );
             }).on('dragabort', (): void => {
                 onDragEnd();
                 this.draggableShape = null;

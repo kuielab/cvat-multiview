@@ -132,10 +132,7 @@ export function clampPointsToCanvasBounds(
     });
 }
 
-const MIN_SHAPE_DIMENSION = 10;
-const MIN_TASK_SHAPE_SIZE = 2;
-
-export function normalizeAndEnforceTaskSpaceDimensions(
+export function normalizeAndClampTaskSpaceDimensions(
     points: number[],
     taskWidth: number,
     taskHeight: number,
@@ -146,84 +143,12 @@ export function normalizeAndEnforceTaskSpaceDimensions(
     if (x1 > x2) [x1, x2] = [x2, x1];
     if (y1 > y2) [y1, y2] = [y2, y1];
 
-    let width = x2 - x1;
-    let height = y2 - y1;
-
-    if (width < MIN_TASK_SHAPE_SIZE) {
-        const cx = (x1 + x2) / 2;
-        x1 = cx - MIN_TASK_SHAPE_SIZE / 2;
-        x2 = cx + MIN_TASK_SHAPE_SIZE / 2;
-        width = MIN_TASK_SHAPE_SIZE;
-    }
-    if (height < MIN_TASK_SHAPE_SIZE) {
-        const cy = (y1 + y2) / 2;
-        y1 = cy - MIN_TASK_SHAPE_SIZE / 2;
-        y2 = cy + MIN_TASK_SHAPE_SIZE / 2;
-        height = MIN_TASK_SHAPE_SIZE;
-    }
-
-    if (x1 < 0) { x2 -= x1; x1 = 0; }
-    if (y1 < 0) { y2 -= y1; y1 = 0; }
-    if (x2 > taskWidth) { x1 -= (x2 - taskWidth); x2 = taskWidth; }
-    if (y2 > taskHeight) { y1 -= (y2 - taskHeight); y2 = taskHeight; }
-
-    x1 = Math.max(0, x1);
-    y1 = Math.max(0, y1);
-    x2 = Math.min(taskWidth, x2);
-    y2 = Math.min(taskHeight, y2);
+    x1 = Math.max(0, Math.min(x1, taskWidth));
+    y1 = Math.max(0, Math.min(y1, taskHeight));
+    x2 = Math.max(0, Math.min(x2, taskWidth));
+    y2 = Math.max(0, Math.min(y2, taskHeight));
 
     return [x1, y1, x2, y2];
-}
-
-export function enforceMinimumShapeDimensions(
-    newPoints: number[],
-    originalPoints: number[],
-): number[] {
-    if (newPoints.length !== 4 || originalPoints.length !== 4) return newPoints;
-
-    const [nx1, ny1, nx2, ny2] = newPoints;
-    const [ox1, oy1, ox2, oy2] = originalPoints;
-
-    let newWidth = Math.abs(nx2 - nx1);
-    let newHeight = Math.abs(ny2 - ny1);
-    const origWidth = Math.abs(ox2 - ox1);
-    const origHeight = Math.abs(oy2 - oy1);
-
-    const isSmallShape = origWidth < 40 || origHeight < 40;
-    if (!isSmallShape) return newPoints;
-
-    let correctedX1 = Math.min(nx1, nx2);
-    let correctedY1 = Math.min(ny1, ny2);
-    let correctedX2 = Math.max(nx1, nx2);
-    let correctedY2 = Math.max(ny1, ny2);
-
-    const widthRatio = origWidth > 0 ? newWidth / origWidth : 1;
-    const heightRatio = origHeight > 0 ? newHeight / origHeight : 1;
-
-    if (widthRatio < 0.5 && heightRatio > 0.5 && heightRatio < 2.0) {
-        const centerX = (correctedX1 + correctedX2) / 2;
-        correctedX1 = centerX - origWidth / 2;
-        correctedX2 = centerX + origWidth / 2;
-        newWidth = origWidth;
-    } else if (heightRatio < 0.5 && widthRatio > 0.5 && widthRatio < 2.0) {
-        const centerY = (correctedY1 + correctedY2) / 2;
-        correctedY1 = centerY - origHeight / 2;
-        correctedY2 = centerY + origHeight / 2;
-        newHeight = origHeight;
-    }
-
-    if (newWidth < MIN_SHAPE_DIMENSION) {
-        const centerX = (correctedX1 + correctedX2) / 2;
-        correctedX1 = centerX - MIN_SHAPE_DIMENSION / 2;
-        correctedX2 = centerX + MIN_SHAPE_DIMENSION / 2;
-    }
-    if (newHeight < MIN_SHAPE_DIMENSION) {
-        const centerY = (correctedY1 + correctedY2) / 2;
-        correctedY1 = centerY - MIN_SHAPE_DIMENSION / 2;
-        correctedY2 = centerY + MIN_SHAPE_DIMENSION / 2;
-    }
-
-    return [correctedX1, correctedY1, correctedX2, correctedY2];
 }
 
 export function cloneObjectStateForDisplay(ann: ObjectState, newPoints: number[]): ObjectState {

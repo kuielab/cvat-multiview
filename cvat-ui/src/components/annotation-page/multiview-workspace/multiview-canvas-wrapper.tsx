@@ -25,8 +25,7 @@ import {
     clampPointsToCanvasBounds,
     cloneObjectStateForDisplay,
     createVideoProportionalFrameData,
-    enforceMinimumShapeDimensions,
-    normalizeAndEnforceTaskSpaceDimensions,
+    normalizeAndClampTaskSpaceDimensions,
     transformPointsForDisplay,
     transformPointsForStorage,
 } from './multiview-canvas-utils';
@@ -327,9 +326,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 transformParams.taskWidth,
             );
 
-            // Normalize and enforce minimum dimensions in task space for new shapes
+            // Normalize and clamp to task space bounds for new shapes
             if (state.shapeType === 'rectangle' && state.points.length === 4 && !state.rotation) {
-                state.points = normalizeAndEnforceTaskSpaceDimensions(
+                state.points = normalizeAndClampTaskSpaceDimensions(
                     state.points,
                     transformParams.taskWidth,
                     transformParams.taskHeight,
@@ -579,17 +578,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             return;
         }
 
-        // For rectangle shapes without rotation, enforce minimum dimensions.
-        // When shapes are very small, CVAT's resize handles (8×8px) overlap the shape
-        // body, causing the user to accidentally resize instead of drag. This detects
-        // and corrects such accidental resizes by preserving the original dimension.
         const transformParams = transformParamsRef.current;
         let updatedPoints = points;
-        if (!rotation && state.shapeType === 'rectangle' &&
-            updatedPoints && Array.isArray(updatedPoints) && updatedPoints.length === 4 &&
-            state.points && state.points.length === 4) {
-            updatedPoints = enforceMinimumShapeDimensions(updatedPoints, state.points);
-        }
 
         // Transform coordinates from canvas space back to task space if needed
         if (transformParams && updatedPoints && Array.isArray(updatedPoints)) {
@@ -612,12 +602,10 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                 transformParams.taskWidth,
             );
 
-            // Normalize and enforce minimum dimensions in task space.
-            // This prevents checkShapeArea() from silently rejecting the save
-            // when repeated resizes produce sub-pixel or inverted coordinates.
+            // Normalize and clamp to task space bounds
             if (!rotation && state.shapeType === 'rectangle' &&
                 updatedPoints.length === 4) {
-                updatedPoints = normalizeAndEnforceTaskSpaceDimensions(
+                updatedPoints = normalizeAndClampTaskSpaceDimensions(
                     updatedPoints,
                     transformParams.taskWidth,
                     transformParams.taskHeight,
