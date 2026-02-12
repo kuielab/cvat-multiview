@@ -780,9 +780,19 @@ export function changeFrameAsync(
                 Math.round(1000 / frameSpeed) - currentTime + (state.annotation.player.frame.changeTime as number),
             );
 
-            const {
-                states, maxZ, minZ, history,
-            } = await fetchAnnotations(toFrame);
+            // During multiview playback, skip annotation re-fetch from server.
+            // Annotations don't change while playing (draw auto-pauses playback),
+            // so reusing current Redux state eliminates a 50-200ms server round-trip per frame.
+            const isPlaying = state.annotation.player.playing;
+            let states; let maxZ; let minZ; let history;
+            if (isMultiview && isPlaying) {
+                states = state.annotation.annotations.states;
+                history = state.annotation.annotations.history;
+                minZ = state.annotation.annotations.zLayer.min;
+                maxZ = state.annotation.annotations.zLayer.max;
+            } else {
+                ({ states, maxZ, minZ, history } = await fetchAnnotations(toFrame));
+            }
 
             dispatch({
                 type: AnnotationActionTypes.CHANGE_FRAME_SUCCESS,

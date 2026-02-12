@@ -55,47 +55,55 @@ export function getMultiviewFramesMeta(taskId: number, viewId: number): Promise<
 }
 
 /**
- * Prefetch the next chunk in the background when playback is past 50% of the current chunk.
- * This eliminates stalls at chunk boundaries during sequential playback.
+ * Prefetch upcoming chunks in the background during forward playback.
+ * Prefetches up to 2 chunks ahead to eliminate stalls at chunk boundaries on slow networks (EC2).
  */
-function maybePrefetchNextChunk(
+function maybePrefetchChunks(
     cache: typeof multiviewFrameDataCache[CacheKey],
     frameNumber: number,
     chunkIndex: number,
 ): void {
-    // Only prefetch during forward playback
-    const posInChunk = frameNumber - chunkIndex * cache.chunkSize;
-    const halfChunk = Math.floor(cache.chunkSize / 2);
-    if (posInChunk < halfChunk) return;
-
-    const nextChunkIndex = chunkIndex + 1;
     const totalChunks = Math.ceil(cache.segmentFrameNumbers.length / cache.chunkSize);
-    if (nextChunkIndex >= totalChunks) return;
 
-    // Already prefetching or decoded this chunk
-    if (cache.prefetchingChunkIndex === nextChunkIndex) return;
-    const nextChunkFirstFrame = cache.segmentFrameNumbers[nextChunkIndex * cache.chunkSize];
-    if (nextChunkFirstFrame === undefined) return;
-    if (cache.provider.frame(nextChunkFirstFrame) !== null) return;
+    // Prefetch up to 2 chunks ahead
+    for (let offset = 1; offset <= 2; offset++) {
+        const targetChunkIndex = chunkIndex + offset;
+        if (targetChunkIndex >= totalChunks) break;
 
-    cache.prefetchingChunkIndex = nextChunkIndex;
+        // For the first next chunk, start prefetch at 30% into current chunk
+        // For the second, start at 60%
+        const posInChunk = frameNumber - chunkIndex * cache.chunkSize;
+        const threshold = Math.floor(cache.chunkSize * 0.3 * offset);
+        if (posInChunk < threshold) break;
 
-    // Fire-and-forget: fetch chunk from server and decode in background
-    cache.getChunk(nextChunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
-        cache.provider.requestDecodeBlock(
-            chunk,
-            nextChunkIndex,
-            cache.segmentFrameNumbers.slice(
-                nextChunkIndex * cache.chunkSize,
-                (nextChunkIndex + 1) * cache.chunkSize,
-            ),
-            () => { /* onDecode per frame - no-op for prefetch */ },
-            () => { cache.prefetchingChunkIndex = null; },
-            () => { cache.prefetchingChunkIndex = null; },
-        );
-    }).catch(() => {
-        cache.prefetchingChunkIndex = null;
-    });
+        // Skip if already prefetching or already cached
+        if (cache.prefetchingChunkIndex === targetChunkIndex) continue;
+        const firstFrame = cache.segmentFrameNumbers[targetChunkIndex * cache.chunkSize];
+        if (firstFrame === undefined) continue;
+        if (cache.provider.frame(firstFrame) !== null) continue;
+
+        cache.prefetchingChunkIndex = targetChunkIndex;
+
+        // Fire-and-forget: fetch chunk from server and decode in background
+        cache.getChunk(targetChunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+            cache.provider.requestDecodeBlock(
+                chunk,
+                targetChunkIndex,
+                cache.segmentFrameNumbers.slice(
+                    targetChunkIndex * cache.chunkSize,
+                    (targetChunkIndex + 1) * cache.chunkSize,
+                ),
+                () => { /* onDecode per frame - no-op for prefetch */ },
+                () => { cache.prefetchingChunkIndex = null; },
+                () => { cache.prefetchingChunkIndex = null; },
+            );
+        }).catch(() => {
+            cache.prefetchingChunkIndex = null;
+        });
+
+        // Only one prefetch at a time (limited by prefetchingChunkIndex)
+        break;
+    }
 }
 
 export async function getMultiviewFrame(params: {
@@ -159,6 +167,12 @@ export async function getMultiviewFrame(params: {
     }
 
     const cache = multiviewFrameDataCache[key];
+
+    // Update decode strategy per request: during playback wait for full block (faster sequential),
+    // when paused resolve per-frame (faster seeking to specific frame)
+    cache.decodeForward = isPlaying;
+    cache.forwardStep = step;
+
     const meta = await cache.getMeta();
     const dataFrameNumber = meta.getDataFrameNumber(frameNumber - jobStartFrame);
     const chunkIndex = meta.getFrameChunkIndex(dataFrameNumber);
@@ -170,8 +184,8 @@ export async function getMultiviewFrame(params: {
 
     const cachedFrame = cache.provider.frame(frameNumber);
     if (cachedFrame) {
-        // Cache hit: start prefetching next chunk in the background
-        maybePrefetchNextChunk(cache, frameNumber, chunkIndex);
+        // Cache hit: start prefetching upcoming chunks in the background
+        maybePrefetchChunks(cache, frameNumber, chunkIndex);
 
         return {
             renderWidth: meta.frames[0].width,
