@@ -52,6 +52,7 @@ _print_lock = threading.Lock()
 _thread_local = threading.local()
 _django_initialized = False
 _django_init_lock = threading.Lock()
+_export_semaphore: threading.Semaphore | None = None  # set in run_batch()
 
 
 def _safe_print(*args, **kwargs):
@@ -268,29 +269,9 @@ def list_all_jobs(server_url: str, opener, csrf_token: str | None) -> list[dict]
     return jobs
 
 
-def export_job_annotations(server_url: str, job_id: int, output_path: str,
-                           opener, csrf_token: str | None,
-                           timeout: int = 600) -> None:
-    """Export annotations from a CVAT job as CVAT 1.1 XML.
-
-    With many parallel workers, exports queue up on the server's RQ workers.
-    Default timeout is 600s to handle large queues (1000+ jobs).
-    """
-    fmt = urllib.parse.quote('CVAT for video 1.1')
-    url = (f'{server_url}/api/jobs/{job_id}/dataset/export'
-           f'?save_images=False&format={fmt}')
-
-    req = urllib.request.Request(url, method='POST', data=b'')
-    req.add_header('Content-Type', 'application/json')
-    if csrf_token:
-        req.add_header('X-CSRFToken', csrf_token)
-
-    resp = opener.open(req)
-    body = json.loads(resp.read())
-    rq_id = body.get('rq_id')
-    if not rq_id:
-        raise RuntimeError(f'Export initiation failed for job {job_id}: {body}')
-
+def _poll_export(server_url: str, job_id: int, rq_id: str, output_path: str,
+                 opener, csrf_token: str | None, timeout: int) -> None:
+    """Poll an export request until completion or timeout, then download."""
     encoded_rq = urllib.parse.quote(rq_id, safe='')
     for _ in range(timeout):
         time.sleep(1)
@@ -318,6 +299,52 @@ def export_job_annotations(server_url: str, job_id: int, output_path: str,
             raise RuntimeError(f'Export failed for job {job_id}: {status_data}')
 
     raise RuntimeError(f'Export timed out for job {job_id} after {timeout}s')
+
+
+def export_job_annotations(server_url: str, job_id: int, output_path: str,
+                           opener, csrf_token: str | None,
+                           timeout: int = 600) -> None:
+    """Export annotations from a CVAT job as CVAT 1.1 XML.
+
+    Uses a semaphore to limit concurrent exports (matching server RQ capacity).
+    Handles HTTP 409 (export already queued/running) by polling existing request.
+    """
+    fmt = urllib.parse.quote('CVAT for video 1.1')
+    url = (f'{server_url}/api/jobs/{job_id}/dataset/export'
+           f'?save_images=False&format={fmt}')
+
+    # Acquire semaphore to limit concurrent exports (released after POST, not after poll)
+    sem = _export_semaphore
+    if sem:
+        sem.acquire()
+
+    try:
+        req = urllib.request.Request(url, method='POST', data=b'')
+        req.add_header('Content-Type', 'application/json')
+        if csrf_token:
+            req.add_header('X-CSRFToken', csrf_token)
+
+        try:
+            resp = opener.open(req)
+            body = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                # Export already queued/running — read rq_id from 409 body
+                body = json.loads(e.read())
+                _safe_print(f'  [Job {job_id}] export already queued (409), polling existing request')
+            else:
+                raise
+
+        rq_id = body.get('rq_id')
+        if not rq_id:
+            raise RuntimeError(f'Export initiation failed for job {job_id}: {body}')
+    finally:
+        # Release semaphore after POST so next export can be submitted
+        if sem:
+            sem.release()
+
+    # Poll outside semaphore — multiple polls can run concurrently
+    _poll_export(server_url, job_id, rq_id, output_path, opener, csrf_token, timeout)
 
 
 def extract_xml_from_zip(zip_path: str, output_dir: str) -> str:
@@ -719,8 +746,13 @@ def run_batch(args) -> int:
         return 0
 
     # Phase 2: Parallel export, convert, upload
+    # Export semaphore limits concurrent POST requests to server (RQ has few workers)
+    global _export_semaphore
+    _export_semaphore = threading.Semaphore(4)
+
     workers = min(args.workers, len(all_jobs))
-    print(f'\n--- Phase 2: Export & convert ({len(all_jobs)} jobs, {workers} workers) ---\n')
+    print(f'\n--- Phase 2: Export & convert ({len(all_jobs)} jobs, {workers} workers, '
+          f'export concurrency=4) ---\n')
 
     results = {'converted': [], 'skipped': [], 'failed': []}
     t_start = time.monotonic()
@@ -856,8 +888,8 @@ Examples:
                         help='Batch mode: process all jobs')
     parser.add_argument('--job-ids', type=str, default=None,
                         help='Comma-separated job IDs (batch mode only)')
-    parser.add_argument('--workers', type=int, default=16,
-                        help='Number of parallel workers (default: 16)')
+    parser.add_argument('--workers', type=int, default=4,
+                        help='Number of parallel workers (default: 4)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be converted without uploading')
     parser.add_argument('--repair-only', action='store_true',
