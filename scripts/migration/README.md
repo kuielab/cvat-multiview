@@ -112,30 +112,37 @@ bash scripts/migration/migrate_v1.sh --user admin --password admin123 --workers 
 bash scripts/migration/migrate_v1.sh --user admin --password admin123 --job-ids 7,8,9
 ```
 
-내부 동작:
+내부 동작 (2-Phase Architecture):
+
+**Phase 1: Segment Repair** (순차, Django ORM)
 1. `migrate_v1.py`를 `cvat_server` 컨테이너로 복사
-2. 컨테이너 안에서 `--all-jobs` 모드로 실행
-3. 각 worker 스레드별 독립 HTTP 세션 생성 (thread-local)
-4. 각 job: segment 수정 → annotation export → 좌표 변환 → 기존 삭제 → 변환된 XML 업로드
-5. 완료 후 복사한 파일 정리
+2. Django ORM 초기화 (`/home/django` 경로 자동 추가)
+3. 모든 job의 segment 범위를 확인하고 annotation max frame 기준으로 수정
+4. Export 캐시 무효화
+
+**Phase 2: Export & Convert** (병렬, HTTP API)
+5. 각 worker 스레드별 독립 HTTP 세션 생성 (thread-local)
+6. 각 job: annotation export → 좌표 변환 → 기존 삭제 → 변환된 XML 업로드
+7. 실패 시 최대 3회 재시도 (5s, 10s, 15s backoff + 재시도 시 segment repair)
 
 > **멱등성**: 이미 변환된 job은 자동 skip됩니다. 여러 번 실행해도 안전합니다.
 
-### 병렬 처리 아키텍처
+### 2-Phase 아키텍처
 
 ```
-Main Thread                    Worker Threads (N개)
-─────────                      ─────────────────────
-login (1회)                    Thread 1: login → [Job A] repair → export → convert → upload
-list_all_jobs()                Thread 2: login → [Job B] repair → export → convert → upload
-django.setup() (1회)   →      Thread 3: login → [Job C] repair → export → convert → upload
-ThreadPoolExecutor(N)          ...
-  ├─ submit(job_1)             Thread N: login → [Job X] repair → export → convert → upload
-  ├─ submit(job_2)
-  └─ ...
-collect results                (per-thread session: thread-local opener + cookie jar)
-print summary
+Phase 1 (Sequential)           Phase 2 (Parallel, N workers)
+─────────────────              ──────────────────────────────
+django.setup()                 Thread 1: login → [Job A] export → convert → upload
+for each job:                  Thread 2: login → [Job B] export → convert → upload
+  repair_segment()             Thread 3: login → [Job C] export → convert → upload
+  (fix stop_frame)             ...
+  (clear export cache)         Thread N: login → [Job X] export → convert → upload
+                               (retry with segment repair on "Unknown frame id")
 ```
+
+**왜 2-Phase?**
+- Phase 1에서 모든 segment를 먼저 수정해야 Phase 2의 export가 성공
+- 이전 버전에서는 repair와 export를 worker 스레드에서 동시에 실행 → Django 모듈 import 실패 가능
 
 | 요소 | Thread-safe 전략 |
 |------|-----------------|
@@ -143,6 +150,7 @@ print summary
 | Django ORM | `_ensure_django()` — 한 번만 초기화 (double-checked locking) |
 | 출력 | `_safe_print()` — `threading.Lock()`으로 보호 |
 | 파일 I/O | `tempfile.TemporaryDirectory()` — 스레드별 독립 임시 디렉토리 |
+| 재시도 | `max_retries=3` — "Unknown internal frame id" 에러 시 segment repair 재실행 |
 
 ### 단일 job 변환 (직접 Python 실행)
 
@@ -168,6 +176,7 @@ python scripts/migration/migrate_v1.py \
 | `--job-ids IDs` | 특정 job만 변환 (쉼표 구분) | 전체 |
 | `--workers N` | 병렬 워커 수 (16~32 권장) | `16` |
 | `--dry-run` | 변환 대상 확인만 (업로드 안 함) | false |
+| `--repair-only` | Segment 수정만 (Phase 1만 실행) | false |
 | `--user` | CVAT 사용자명 | 필수 |
 | `--password` | CVAT 비밀번호 | 필수 |
 | `--server URL` | CVAT 서버 주소 | `http://localhost:8080` |
@@ -226,7 +235,7 @@ bbox가 캔버스에 표시되지 않음.
    - Shell wrapper 작성
    - 변환 로직은 1단계와 동일 (비균등 스케일링)
 
-3. **Hybrid Scaling + batch 모드 + 병렬 처리 (현재)**
+3. **Hybrid Scaling + batch 모드 + 병렬 처리**
    - **변환 알고리즘 변경**: 비균등 → Hybrid Scaling
      - 중심점: 비균등 스케일링 (위치 정확)
      - Bbox 크기: 균등 스케일링 (기하평균, 비율 보존)
@@ -244,3 +253,16 @@ bbox가 캔버스에 표시되지 않음.
    - Job 8, 9에 적용 완료:
      - Job 8 (`multisensor_home2_09-247-Part1`): 27 tracks, 54 boxes
      - Job 9 (`multisensor_home1_05-129-Part2`): 92 tracks, 184 boxes
+
+4. **2-Phase Architecture + sys.path 수정 (현재)**
+   - **근본 원인 수정**: `/home/django`가 Python path에 없어 Django ORM 초기화 실패
+     - 스크립트가 `/home/django/migration_tmp/`에서 실행되어 `import cvat` 불가
+     - `sys.path.insert(0, '/home/django')` 추가로 해결
+   - **2-Phase 아키텍처**로 변경:
+     - Phase 1: 모든 segment를 순차적으로 수정 (Django ORM)
+     - Phase 2: 병렬 export + convert + upload (HTTP API)
+   - **재시도 시 segment repair** 재실행 (`attempt > 1`일 때)
+   - **`--repair-only` 플래그** 추가: segment 수정만 하고 종료 (디버깅용)
+   - 타임아웃 증가: export 120s→600s, upload 120s→600s
+   - 상세 로깅 추가: Django init 성공/실패, repair 상세, PyAV 에러, 캐시 삭제 건수
+   - EC2 1140 jobs 대응: "Unknown internal frame id" 에러 근본 해결

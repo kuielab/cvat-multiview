@@ -82,12 +82,20 @@ def _ensure_django() -> bool:
         if _django_initialized:
             return True
         try:
+            # Add Django project root to path (script may run from /home/django/migration_tmp/)
+            django_root = '/home/django'
+            if os.path.isdir(os.path.join(django_root, 'cvat')):
+                if django_root not in sys.path:
+                    sys.path.insert(0, django_root)
             import django
             os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cvat.settings.production')
             django.setup()
             _django_initialized = True
+            _safe_print('  [Django] ORM initialized successfully')
             return True
-        except Exception:
+        except Exception as e:
+            _safe_print(f'  [Django] FAILED to initialize: {e}')
+            _safe_print(f'  [Django] Segment repair will be unavailable')
             return False
 
 
@@ -220,7 +228,7 @@ def upload_annotations(server_url: str, job_id: int, xml_path: str,
     if not rq_id:
         raise RuntimeError(f'Upload failed: {result}')
 
-    for _ in range(120):
+    for _ in range(600):
         time.sleep(1)
         req = urllib.request.Request(f'{server_url}/api/requests/{rq_id}')
         if csrf_token:
@@ -233,7 +241,7 @@ def upload_annotations(server_url: str, job_id: int, xml_path: str,
         if state == 'failed':
             raise RuntimeError(f'Upload failed: {status_data}')
 
-    raise RuntimeError('Upload timed out after 120 seconds')
+    raise RuntimeError(f'Upload timed out for job {job_id} after 600s')
 
 
 def list_all_jobs(server_url: str, opener, csrf_token: str | None) -> list[dict]:
@@ -261,8 +269,13 @@ def list_all_jobs(server_url: str, opener, csrf_token: str | None) -> list[dict]
 
 
 def export_job_annotations(server_url: str, job_id: int, output_path: str,
-                           opener, csrf_token: str | None) -> None:
-    """Export annotations from a CVAT job as CVAT 1.1 XML."""
+                           opener, csrf_token: str | None,
+                           timeout: int = 600) -> None:
+    """Export annotations from a CVAT job as CVAT 1.1 XML.
+
+    With many parallel workers, exports queue up on the server's RQ workers.
+    Default timeout is 600s to handle large queues (1000+ jobs).
+    """
     fmt = urllib.parse.quote('CVAT for video 1.1')
     url = (f'{server_url}/api/jobs/{job_id}/dataset/export'
            f'?save_images=False&format={fmt}')
@@ -279,7 +292,7 @@ def export_job_annotations(server_url: str, job_id: int, output_path: str,
         raise RuntimeError(f'Export initiation failed for job {job_id}: {body}')
 
     encoded_rq = urllib.parse.quote(rq_id, safe='')
-    for _ in range(120):
+    for _ in range(timeout):
         time.sleep(1)
         req = urllib.request.Request(f'{server_url}/api/requests/{encoded_rq}')
         if csrf_token:
@@ -304,7 +317,7 @@ def export_job_annotations(server_url: str, job_id: int, output_path: str,
         if state == 'failed':
             raise RuntimeError(f'Export failed for job {job_id}: {status_data}')
 
-    raise RuntimeError(f'Export timed out for job {job_id}')
+    raise RuntimeError(f'Export timed out for job {job_id} after {timeout}s')
 
 
 def extract_xml_from_zip(zip_path: str, output_dir: str) -> str:
@@ -456,6 +469,7 @@ def _repair_segment_if_needed(job_id: int) -> str | None:
     Returns a description of the repair, or None if no repair was needed.
     """
     if not _ensure_django():
+        _safe_print(f'  [Job {job_id}] WARNING: Django unavailable, skipping segment repair')
         return None
 
     from cvat.apps.engine.models import Job, TrackedShape, LabeledShape
@@ -463,6 +477,7 @@ def _repair_segment_if_needed(job_id: int) -> str | None:
     try:
         db_job = Job.objects.select_related('segment', 'segment__task__data').get(id=job_id)
     except Job.DoesNotExist:
+        _safe_print(f'  [Job {job_id}] WARNING: Job not found in DB')
         return None
 
     segment = db_job.segment
@@ -506,8 +521,8 @@ def _repair_segment_if_needed(job_id: int) -> str | None:
                 container.close()
                 if video_frames > actual_frame_count:
                     actual_frame_count = video_frames
-    except Exception:
-        pass
+    except Exception as e:
+        _safe_print(f'  [Job {job_id}] PyAV frame count check failed (non-fatal): {e}')
 
     old_stop = segment.stop_frame
     new_stop = actual_frame_count - 1
@@ -521,14 +536,19 @@ def _repair_segment_if_needed(job_id: int) -> str | None:
 
     # Invalidate export cache
     cache_pattern = f'/home/django/data/cache/export/job-{job_id}-*'
+    removed = 0
     for cache_file in _glob_mod.glob(cache_pattern):
         try:
             os.remove(cache_file)
+            removed += 1
         except OSError:
             pass
 
-    return (f'segment repaired: stop_frame {old_stop} -> {new_stop} '
-            f'(max_anno={max_anno_frame}, video={actual_frame_count})')
+    msg = (f'segment repaired: stop_frame {old_stop} -> {new_stop} '
+           f'(max_anno={max_anno_frame}, video={actual_frame_count})')
+    if removed:
+        msg += f', cleared {removed} cache files'
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -536,10 +556,13 @@ def _repair_segment_if_needed(job_id: int) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _process_single_job(server_url: str, username: str, password: str,
-                        job: dict, dry_run: bool) -> dict:
-    """Process one job: repair -> export -> convert -> upload.
+                        job: dict, dry_run: bool,
+                        max_retries: int = 3) -> dict:
+    """Process one job: export -> convert -> upload.
 
+    Segment repair is done in Phase 1 (before parallel export).
     Each thread gets its own HTTP session via thread-local storage.
+    Retries up to max_retries times on transient failures (timeouts, HTTP errors).
     """
     job_id = job['id']
     task_id = job.get('task_id', '?')
@@ -558,68 +581,116 @@ def _process_single_job(server_url: str, username: str, password: str,
     except Exception:
         pass
 
-    try:
-        # Repair segment if annotations reference out-of-range frames
-        repair_msg = _repair_segment_if_needed(job_id)
-        if repair_msg:
-            _safe_print(f'  [Job {job_id}] {repair_msg}')
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            # On retry, try segment repair again (might fix "Unknown internal frame id")
+            if attempt > 1:
+                repair_msg = _repair_segment_if_needed(job_id)
+                if repair_msg:
+                    _safe_print(f'  [Job {job_id}] (retry repair) {repair_msg}')
 
-        target_w, target_h = fetch_job_dimensions(
-            server_url, job_id, opener, csrf_token,
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            export_path = os.path.join(tmpdir, f'job_{job_id}_export.zip')
-            export_job_annotations(
-                server_url, job_id, export_path, opener, csrf_token,
+            target_w, target_h = fetch_job_dimensions(
+                server_url, job_id, opener, csrf_token,
             )
 
-            with open(export_path, 'rb') as f:
-                is_zip = f.read(4) == b'PK\x03\x04'
-            if is_zip:
-                xml_path = extract_xml_from_zip(export_path, tmpdir)
-            else:
-                xml_path = export_path
+            with tempfile.TemporaryDirectory() as tmpdir:
+                export_path = os.path.join(tmpdir, f'job_{job_id}_export.zip')
+                export_job_annotations(
+                    server_url, job_id, export_path, opener, csrf_token,
+                )
 
-            file_size = os.path.getsize(xml_path)
-            if file_size < 50:
-                return {'type': 'skipped', 'job_id': job_id,
-                        'task': task_name, 'reason': 'empty annotations'}
+                with open(export_path, 'rb') as f:
+                    is_zip = f.read(4) == b'PK\x03\x04'
+                if is_zip:
+                    xml_path = extract_xml_from_zip(export_path, tmpdir)
+                else:
+                    xml_path = export_path
 
-            converted_path = os.path.join(tmpdir, f'job_{job_id}_converted.xml')
-            stats = convert_annotations(
-                xml_path, converted_path, target_w, target_h, job_id=job_id,
-            )
+                file_size = os.path.getsize(xml_path)
+                if file_size < 50:
+                    return {'type': 'skipped', 'job_id': job_id,
+                            'task': task_name, 'reason': 'empty annotations'}
 
-            if stats['src'] == stats['dst']:
-                return {'type': 'skipped', 'job_id': job_id,
-                        'task': task_name, 'reason': f'already {stats["src"]}'}
+                converted_path = os.path.join(tmpdir, f'job_{job_id}_converted.xml')
+                stats = convert_annotations(
+                    xml_path, converted_path, target_w, target_h, job_id=job_id,
+                )
 
-            if stats['boxes'] == 0:
-                return {'type': 'skipped', 'job_id': job_id,
-                        'task': task_name, 'reason': 'no boxes'}
+                if stats['src'] == stats['dst']:
+                    return {'type': 'skipped', 'job_id': job_id,
+                            'task': task_name, 'reason': f'already {stats["src"]}'}
 
-            if dry_run:
+                if stats['boxes'] == 0:
+                    return {'type': 'skipped', 'job_id': job_id,
+                            'task': task_name, 'reason': 'no boxes'}
+
+                if dry_run:
+                    return {'type': 'converted', 'job_id': job_id,
+                            'task': task_name, 'stats': stats, 'dry_run': True}
+
+                upload_annotations(
+                    server_url, job_id, converted_path, opener, csrf_token,
+                )
                 return {'type': 'converted', 'job_id': job_id,
-                        'task': task_name, 'stats': stats, 'dry_run': True}
+                        'task': task_name, 'stats': stats}
 
-            upload_annotations(
-                server_url, job_id, converted_path, opener, csrf_token,
-            )
-            return {'type': 'converted', 'job_id': job_id,
-                    'task': task_name, 'stats': stats}
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            # Check if this is the "Unknown internal frame id" error
+            is_frame_error = 'Unknown internal frame id' in err_str
+            if attempt < max_retries:
+                wait = attempt * 5
+                hint = ' (will retry with segment repair)' if is_frame_error else ''
+                _safe_print(f'  [Job {job_id}] attempt {attempt}/{max_retries} failed: {e} '
+                            f'(retry in {wait}s){hint}')
+                time.sleep(wait)
 
-    except Exception as e:
-        return {'type': 'failed', 'job_id': job_id,
-                'task': task_name, 'error': str(e)}
+    return {'type': 'failed', 'job_id': job_id,
+            'task': task_name, 'error': str(last_error)}
 
 
 # ---------------------------------------------------------------------------
 # Batch mode
 # ---------------------------------------------------------------------------
 
+def _repair_all_segments(job_ids: list[int]) -> dict[int, str]:
+    """Phase 1: Repair all segments sequentially before export.
+
+    Must run before parallel export to ensure all segment boundaries are
+    correct. Returns a dict of {job_id: repair_message} for repaired jobs.
+    """
+    print(f'\n--- Phase 1: Segment repair ({len(job_ids)} jobs) ---')
+
+    if not _ensure_django():
+        print('  WARNING: Django unavailable — segment repair skipped entirely')
+        print('  Jobs with out-of-range annotations WILL fail during export')
+        return {}
+
+    repaired = {}
+    errors = 0
+    for i, job_id in enumerate(job_ids, 1):
+        try:
+            msg = _repair_segment_if_needed(job_id)
+            if msg:
+                _safe_print(f'  [{i}/{len(job_ids)}] Job {job_id}: {msg}')
+                repaired[job_id] = msg
+        except Exception as e:
+            errors += 1
+            _safe_print(f'  [{i}/{len(job_ids)}] Job {job_id}: REPAIR ERROR - {e}')
+
+    print(f'  Repair complete: {len(repaired)} repaired, '
+          f'{len(job_ids) - len(repaired) - errors} OK, {errors} errors')
+    return repaired
+
+
 def run_batch(args) -> int:
-    """Batch mode: process all jobs with parallel workers."""
+    """Batch mode: process all jobs in two phases.
+
+    Phase 1: Repair all segments (sequential, Django ORM)
+    Phase 2: Export, convert, upload (parallel, HTTP API)
+    """
     # Use a single session for initial job listing
     opener, csrf_token = get_cvat_session(
         args.server, None, args.user, args.password,
@@ -638,11 +709,18 @@ def run_batch(args) -> int:
         print('No jobs to process.')
         return 0
 
-    workers = min(args.workers, len(all_jobs))
-    print(f'Processing {len(all_jobs)} jobs with {workers} parallel workers...\n')
+    # Phase 1: Repair all segments BEFORE parallel export
+    # This ensures "Unknown internal frame id" errors are prevented
+    job_ids = [j['id'] for j in all_jobs]
+    _repair_all_segments(job_ids)
 
-    # Pre-initialize Django ORM before spawning threads
-    _ensure_django()
+    if getattr(args, 'repair_only', False):
+        print('\n--repair-only: stopping after segment repair')
+        return 0
+
+    # Phase 2: Parallel export, convert, upload
+    workers = min(args.workers, len(all_jobs))
+    print(f'\n--- Phase 2: Export & convert ({len(all_jobs)} jobs, {workers} workers) ---\n')
 
     results = {'converted': [], 'skipped': [], 'failed': []}
     t_start = time.monotonic()
@@ -782,6 +860,8 @@ Examples:
                         help='Number of parallel workers (default: 16)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be converted without uploading')
+    parser.add_argument('--repair-only', action='store_true',
+                        help='Only repair segments (Phase 1), skip export/convert')
     parser.add_argument('--target-w', type=int, help='Target width (single-job mode)')
     parser.add_argument('--target-h', type=int, help='Target height (single-job mode)')
     parser.add_argument('--job-id', type=int,
