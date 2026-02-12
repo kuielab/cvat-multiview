@@ -120,3 +120,23 @@ python scripts/migration/migrate_v1.py \
 | `--job-id ID` | 단일 job 해상도 자동 감지 | - |
 | `--target-w` / `--target-h` | 수동 해상도 지정 | API 자동 감지 |
 | `--upload` | 변환 후 자동 업로드 (단일 모드) | false |
+
+---
+
+## History
+
+### 문제 발견 및 분석
+
+**증상**: Master에서 export한 annotation을 Refactor task에 import했으나,
+bbox가 캔버스에 표시되지 않음 (1920x1080 좌표가 320x240 캔버스 밖에 위치).
+
+**근본 원인**: Docker에 ffprobe 미설치 → `_extract_video_metadata()` fallback → 1920x1080 저장
+
+### 개발 과정
+
+1. **단순 비균등 스케일링**: X÷6, Y÷4.5 독립 스케일링
+   - 문제: bbox 비율 변함 (정사각형 → 세로로 긴 직사각형)
+2. **API 자동화 추가**: CVAT API 해상도 자동 감지, 로그인 인증, 자동 업로드
+3. **Hybrid Scaling (현재 v1)**: 중심점은 비균등, bbox 크기는 기하평균 균등 스케일링
+   - bbox 좌표 범위로 변환 필요 여부 자동 판단 (멱등성)
+   - batch 모드 (`--all-jobs`) + Docker shell wrapper 통합
