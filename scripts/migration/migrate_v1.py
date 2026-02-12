@@ -20,33 +20,88 @@ Usage:
     # Batch: specific jobs:
     bash scripts/migration/migrate_v1.sh --user admin --password admin123 --job-ids 7,8,9
 
+    # Batch: 32 parallel workers:
+    bash scripts/migration/migrate_v1.sh --user admin --password admin123 --workers 32
+
     # Single job (direct Python):
     python migrate_v1.py input.xml output.xml --job-id 7 --user admin --password admin123 --upload
 """
 
 import argparse
+import glob as _glob_mod
 import json
 import math
 import os
 import sys
 import tempfile
+import threading
 import time
-import urllib.request
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.cookiejar import MozillaCookieJar
 
+
+# ---------------------------------------------------------------------------
+# Thread-safe infrastructure
+# ---------------------------------------------------------------------------
+
+_print_lock = threading.Lock()
+_thread_local = threading.local()
+_django_initialized = False
+_django_init_lock = threading.Lock()
+
+
+def _safe_print(*args, **kwargs):
+    """Thread-safe print."""
+    with _print_lock:
+        print(*args, **kwargs, flush=True)
+
+
+def _get_thread_session(server_url: str, username: str, password: str):
+    """Get or create a per-thread authenticated HTTP session.
+
+    Each thread gets its own opener + cookie jar to avoid race conditions.
+    Sessions are cached on thread-local storage so login happens once per thread.
+    """
+    if not hasattr(_thread_local, 'opener'):
+        _thread_local.opener, _thread_local.csrf_token = get_cvat_session(
+            server_url, None, username, password,
+        )
+    return _thread_local.opener, _thread_local.csrf_token
+
+
+def _ensure_django() -> bool:
+    """Initialize Django ORM exactly once (thread-safe)."""
+    global _django_initialized
+    if _django_initialized:
+        return True
+    with _django_init_lock:
+        if _django_initialized:
+            return True
+        try:
+            import django
+            os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cvat.settings.production')
+            django.setup()
+            _django_initialized = True
+            return True
+        except Exception:
+            return False
+
+
+# ---------------------------------------------------------------------------
+# Authentication helpers
+# ---------------------------------------------------------------------------
 
 def _load_cookies_with_httponly(path: str) -> MozillaCookieJar:
     """Load cookies.txt handling #HttpOnly_ lines that Python ignores."""
     cookie_jar = MozillaCookieJar()
 
-    # Read file and fix #HttpOnly_ lines so MozillaCookieJar can parse them
     with open(path, 'r') as f:
         lines = f.readlines()
 
-    import tempfile
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp:
         for line in lines:
             if line.startswith('#HttpOnly_'):
@@ -90,7 +145,6 @@ def get_cvat_session(server_url: str, cookies_file: str | None = None,
         req.add_header('Content-Type', 'application/json')
         with opener.open(req) as resp:
             resp.read()
-        # Update CSRF token from login response cookies
         for cookie in cookie_jar:
             if cookie.name == 'csrftoken':
                 csrf_token = cookie.value
@@ -98,10 +152,13 @@ def get_cvat_session(server_url: str, cookies_file: str | None = None,
     return opener, csrf_token
 
 
+# ---------------------------------------------------------------------------
+# CVAT API helpers
+# ---------------------------------------------------------------------------
+
 def fetch_job_dimensions(server_url: str, job_id: int,
                          opener, csrf_token: str | None) -> tuple[int, int]:
     """Fetch actual video dimensions from CVAT API for a multiview job."""
-    # Get job info to find task_id
     req = urllib.request.Request(f'{server_url}/api/jobs/{job_id}')
     if csrf_token:
         req.add_header('X-CSRFToken', csrf_token)
@@ -110,7 +167,6 @@ def fetch_job_dimensions(server_url: str, job_id: int,
 
     task_id = job_data['task_id']
 
-    # Get data meta for frame dimensions
     req = urllib.request.Request(f'{server_url}/api/tasks/{task_id}/data/meta')
     if csrf_token:
         req.add_header('X-CSRFToken', csrf_token)
@@ -127,8 +183,7 @@ def fetch_job_dimensions(server_url: str, job_id: int,
 def upload_annotations(server_url: str, job_id: int, xml_path: str,
                        opener, csrf_token: str | None) -> None:
     """Upload converted annotations to CVAT job."""
-    # First, delete existing annotations
-    print(f'Deleting existing annotations from job {job_id}...')
+    _safe_print(f'  [Job {job_id}] Deleting existing annotations...')
     req = urllib.request.Request(
         f'{server_url}/api/jobs/{job_id}/annotations/',
         method='DELETE',
@@ -138,11 +193,9 @@ def upload_annotations(server_url: str, job_id: int, xml_path: str,
     with opener.open(req) as resp:
         if resp.status not in (200, 204):
             raise RuntimeError(f'DELETE failed: {resp.status}')
-    print('  Deleted.')
 
-    # Upload new annotations
-    print(f'Uploading {xml_path}...')
-    boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
+    _safe_print(f'  [Job {job_id}] Uploading annotations...')
+    boundary = f'----FormBoundary{job_id}{int(time.time())}'
     with open(xml_path, 'rb') as f:
         file_data = f.read()
 
@@ -167,9 +220,7 @@ def upload_annotations(server_url: str, job_id: int, xml_path: str,
     if not rq_id:
         raise RuntimeError(f'Upload failed: {result}')
 
-    # Poll for completion
-    print(f'  Upload started (rq_id={rq_id}), waiting...')
-    for _ in range(60):
+    for _ in range(120):
         time.sleep(1)
         req = urllib.request.Request(f'{server_url}/api/requests/{rq_id}')
         if csrf_token:
@@ -178,150 +229,11 @@ def upload_annotations(server_url: str, job_id: int, xml_path: str,
             status_data = json.loads(resp.read())
         state = status_data.get('status', '')
         if state == 'finished':
-            print('  Upload complete.')
             return
         if state == 'failed':
             raise RuntimeError(f'Upload failed: {status_data}')
 
-    raise RuntimeError('Upload timed out after 60 seconds')
-
-
-def _detect_source_dimensions(root, target_w: int, target_h: int) -> tuple[int, int]:
-    """Detect actual source coordinate space by inspecting bbox coordinates.
-
-    If <original_size> differs from target, use that.
-    Otherwise, check if any bbox exceeds target bounds — if so, coordinates
-    are in a larger space (e.g. master's fake 1920x1080).
-    """
-    orig_size = root.find('.//original_size')
-    if orig_size is not None:
-        xml_w = int(orig_size.find('width').text)
-        xml_h = int(orig_size.find('height').text)
-        if xml_w != target_w or xml_h != target_h:
-            return xml_w, xml_h
-
-    # <original_size> matches target, but coordinates might be in a larger space
-    # (e.g. task recreated with refactor but annotations imported from master)
-    max_x, max_y = 0.0, 0.0
-    for box in root.iter('box'):
-        xbr = float(box.get('xbr', '0'))
-        ybr = float(box.get('ybr', '0'))
-        if xbr > max_x:
-            max_x = xbr
-        if ybr > max_y:
-            max_y = ybr
-
-    if max_x <= target_w and max_y <= target_h:
-        # All coordinates within target bounds — no conversion needed
-        return target_w, target_h
-
-    # Coordinates exceed target bounds — infer source dimensions
-    # Master used 1920x1080 as fallback, so try that first
-    if max_x > target_w or max_y > target_h:
-        # Round up to common resolutions
-        candidates = [
-            (1920, 1080), (1280, 720), (640, 480),
-            (3840, 2160), (2560, 1440),
-        ]
-        for cw, ch in candidates:
-            if max_x <= cw and max_y <= ch:
-                return cw, ch
-        # Fallback: use max coordinate bounds rounded up
-        return int(math.ceil(max_x)), int(math.ceil(max_y))
-
-    return target_w, target_h
-
-
-def convert_annotations(input_path: str, output_path: str,
-                        target_w: int, target_h: int) -> dict:
-    tree = ET.parse(input_path)
-    root = tree.getroot()
-
-    src_w, src_h = _detect_source_dimensions(root, target_w, target_h)
-
-    if src_w == target_w and src_h == target_h:
-        print(f'  No conversion needed (coordinates within {target_w}x{target_h})')
-        tree.write(output_path, encoding='unicode', xml_declaration=True)
-        return {
-            'tracks': 0, 'boxes': 0,
-            'src': f'{src_w}x{src_h}', 'dst': f'{target_w}x{target_h}',
-        }
-
-    scale_x = target_w / src_w
-    scale_y = target_h / src_h
-
-    print(f'  Source space: {src_w}x{src_h}')
-    print(f'  Target space: {target_w}x{target_h}')
-    print(f'  Scale: x={scale_x:.6f}, y={scale_y:.6f}')
-
-    if abs(scale_x - scale_y) > 0.001:
-        print(f'  Hybrid scaling: center=non-uniform, size=uniform (geometric mean)')
-
-    # Update <original_size>
-    orig_size = root.find('.//original_size')
-    if orig_size is not None:
-        orig_size.find('width').text = str(target_w)
-        orig_size.find('height').text = str(target_h)
-
-    # Update <multiview><views><view> dimensions
-    for view_el in root.findall('.//multiview/views/view'):
-        w_el = view_el.find('width')
-        h_el = view_el.find('height')
-        if w_el is not None:
-            w_el.text = str(target_w)
-        if h_el is not None:
-            h_el.text = str(target_h)
-
-    # Uniform scale for bbox dimensions (geometric mean) to preserve aspect ratio
-    uniform_scale = math.sqrt(scale_x * scale_y)
-
-    def convert_box(box_el):
-        """Convert a single box: center via non-uniform, size via uniform scale."""
-        xtl = float(box_el.get('xtl'))
-        ytl = float(box_el.get('ytl'))
-        xbr = float(box_el.get('xbr'))
-        ybr = float(box_el.get('ybr'))
-
-        cx = (xtl + xbr) / 2 * scale_x
-        cy = (ytl + ybr) / 2 * scale_y
-
-        w = (xbr - xtl) * uniform_scale
-        h = (ybr - ytl) * uniform_scale
-
-        new_xtl = max(0, cx - w / 2)
-        new_ytl = max(0, cy - h / 2)
-        new_xbr = min(target_w, cx + w / 2)
-        new_ybr = min(target_h, cy + h / 2)
-
-        box_el.set('xtl', f'{new_xtl:.2f}')
-        box_el.set('ytl', f'{new_ytl:.2f}')
-        box_el.set('xbr', f'{new_xbr:.2f}')
-        box_el.set('ybr', f'{new_ybr:.2f}')
-
-    track_count = 0
-    box_count = 0
-
-    for track in root.findall('.//track'):
-        track_count += 1
-        for box in track.findall('box'):
-            box_count += 1
-            convert_box(box)
-
-    shape_count = 0
-    for shape in root.findall('.//image/box'):
-        shape_count += 1
-        convert_box(shape)
-
-    tree.write(output_path, encoding='unicode', xml_declaration=True)
-
-    stats = {
-        'tracks': track_count,
-        'boxes': box_count + shape_count,
-        'src': f'{src_w}x{src_h}',
-        'dst': f'{target_w}x{target_h}',
-    }
-    print(f'  Converted {track_count} tracks, {box_count + shape_count} boxes')
-    return stats
+    raise RuntimeError('Upload timed out after 120 seconds')
 
 
 def list_all_jobs(server_url: str, opener, csrf_token: str | None) -> list[dict]:
@@ -405,8 +317,310 @@ def extract_xml_from_zip(zip_path: str, output_dir: str) -> str:
         return os.path.join(output_dir, xml_files[0])
 
 
+# ---------------------------------------------------------------------------
+# Coordinate conversion
+# ---------------------------------------------------------------------------
+
+def _detect_source_dimensions(root, target_w: int, target_h: int) -> tuple[int, int]:
+    """Detect actual source coordinate space by inspecting bbox coordinates.
+
+    If <original_size> differs from target, use that.
+    Otherwise, check if any bbox exceeds target bounds — if so, coordinates
+    are in a larger space (e.g. master's fake 1920x1080).
+    """
+    orig_size = root.find('.//original_size')
+    if orig_size is not None:
+        xml_w = int(orig_size.find('width').text)
+        xml_h = int(orig_size.find('height').text)
+        if xml_w != target_w or xml_h != target_h:
+            return xml_w, xml_h
+
+    max_x, max_y = 0.0, 0.0
+    for box in root.iter('box'):
+        xbr = float(box.get('xbr', '0'))
+        ybr = float(box.get('ybr', '0'))
+        if xbr > max_x:
+            max_x = xbr
+        if ybr > max_y:
+            max_y = ybr
+
+    if max_x <= target_w and max_y <= target_h:
+        return target_w, target_h
+
+    if max_x > target_w or max_y > target_h:
+        candidates = [
+            (1920, 1080), (1280, 720), (640, 480),
+            (3840, 2160), (2560, 1440),
+        ]
+        for cw, ch in candidates:
+            if max_x <= cw and max_y <= ch:
+                return cw, ch
+        return int(math.ceil(max_x)), int(math.ceil(max_y))
+
+    return target_w, target_h
+
+
+def convert_annotations(input_path: str, output_path: str,
+                        target_w: int, target_h: int,
+                        job_id: int | None = None) -> dict:
+    """Convert annotation coordinates using Hybrid Scaling."""
+    tag = f'[Job {job_id}] ' if job_id else ''
+    tree = ET.parse(input_path)
+    root = tree.getroot()
+
+    src_w, src_h = _detect_source_dimensions(root, target_w, target_h)
+
+    if src_w == target_w and src_h == target_h:
+        _safe_print(f'  {tag}No conversion needed (coordinates within {target_w}x{target_h})')
+        tree.write(output_path, encoding='unicode', xml_declaration=True)
+        return {
+            'tracks': 0, 'boxes': 0,
+            'src': f'{src_w}x{src_h}', 'dst': f'{target_w}x{target_h}',
+        }
+
+    scale_x = target_w / src_w
+    scale_y = target_h / src_h
+    uniform_scale = math.sqrt(scale_x * scale_y)
+
+    _safe_print(f'  {tag}{src_w}x{src_h} -> {target_w}x{target_h} '
+                f'(sx={scale_x:.4f} sy={scale_y:.4f} uniform={uniform_scale:.4f})')
+
+    # Update XML metadata
+    orig_size = root.find('.//original_size')
+    if orig_size is not None:
+        orig_size.find('width').text = str(target_w)
+        orig_size.find('height').text = str(target_h)
+
+    for view_el in root.findall('.//multiview/views/view'):
+        w_el = view_el.find('width')
+        h_el = view_el.find('height')
+        if w_el is not None:
+            w_el.text = str(target_w)
+        if h_el is not None:
+            h_el.text = str(target_h)
+
+    def convert_box(box_el):
+        xtl = float(box_el.get('xtl'))
+        ytl = float(box_el.get('ytl'))
+        xbr = float(box_el.get('xbr'))
+        ybr = float(box_el.get('ybr'))
+
+        cx = (xtl + xbr) / 2 * scale_x
+        cy = (ytl + ybr) / 2 * scale_y
+        w = (xbr - xtl) * uniform_scale
+        h = (ybr - ytl) * uniform_scale
+
+        box_el.set('xtl', f'{max(0, cx - w / 2):.2f}')
+        box_el.set('ytl', f'{max(0, cy - h / 2):.2f}')
+        box_el.set('xbr', f'{min(target_w, cx + w / 2):.2f}')
+        box_el.set('ybr', f'{min(target_h, cy + h / 2):.2f}')
+
+    track_count = 0
+    box_count = 0
+    for track in root.findall('.//track'):
+        track_count += 1
+        for box in track.findall('box'):
+            box_count += 1
+            convert_box(box)
+
+    shape_count = 0
+    for shape in root.findall('.//image/box'):
+        shape_count += 1
+        convert_box(shape)
+
+    tree.write(output_path, encoding='unicode', xml_declaration=True)
+
+    total_boxes = box_count + shape_count
+    _safe_print(f'  {tag}Converted {track_count} tracks, {total_boxes} boxes')
+    return {
+        'tracks': track_count,
+        'boxes': total_boxes,
+        'src': f'{src_w}x{src_h}',
+        'dst': f'{target_w}x{target_h}',
+    }
+
+
+# ---------------------------------------------------------------------------
+# Segment repair (Django ORM — runs inside container)
+# ---------------------------------------------------------------------------
+
+def _repair_segment_if_needed(job_id: int) -> str | None:
+    """Fix segment stop_frame if annotations reference frames beyond it.
+
+    When tasks were created with master code, _extract_video_metadata() fell
+    back to frame_count=3000 (ffprobe not installed). If the actual video has
+    more frames, annotations may exist beyond the segment boundary. Also,
+    PyAV's video_stream.frames can return 0, and int(duration*fps) can
+    undercount by 1-2 frames due to rounding.
+
+    Returns a description of the repair, or None if no repair was needed.
+    """
+    if not _ensure_django():
+        return None
+
+    from cvat.apps.engine.models import Job, TrackedShape, LabeledShape
+
+    try:
+        db_job = Job.objects.select_related('segment', 'segment__task__data').get(id=job_id)
+    except Job.DoesNotExist:
+        return None
+
+    segment = db_job.segment
+    db_data = segment.task.data
+
+    max_track_frame = (
+        TrackedShape.objects
+        .filter(track__job=db_job)
+        .order_by('-frame')
+        .values_list('frame', flat=True)
+        .first()
+    )
+    max_shape_frame = (
+        LabeledShape.objects
+        .filter(job=db_job)
+        .order_by('-frame')
+        .values_list('frame', flat=True)
+        .first()
+    )
+
+    max_anno_frame = max(max_track_frame or 0, max_shape_frame or 0)
+
+    if max_anno_frame <= segment.stop_frame:
+        return None
+
+    # Try to get actual video frame count via PyAV
+    actual_frame_count = max_anno_frame + 1
+    try:
+        import av as _av
+        multiview_data = db_data.multiview_data
+        if multiview_data:
+            video = multiview_data.video_view1
+            if video and video.path:
+                container = _av.open(video.path)
+                vs = container.streams.video[0]
+                video_frames = vs.frames
+                if not video_frames:
+                    duration = float(container.duration / _av.time_base) if container.duration else 0
+                    fps = float(vs.average_rate) if vs.average_rate else 30.0
+                    video_frames = int(duration * fps) if duration > 0 else 0
+                container.close()
+                if video_frames > actual_frame_count:
+                    actual_frame_count = video_frames
+    except Exception:
+        pass
+
+    old_stop = segment.stop_frame
+    new_stop = actual_frame_count - 1
+
+    segment.stop_frame = new_stop
+    segment.save(update_fields=['stop_frame'])
+
+    db_data.size = actual_frame_count
+    db_data.stop_frame = new_stop
+    db_data.save(update_fields=['size', 'stop_frame'])
+
+    # Invalidate export cache
+    cache_pattern = f'/home/django/data/cache/export/job-{job_id}-*'
+    for cache_file in _glob_mod.glob(cache_pattern):
+        try:
+            os.remove(cache_file)
+        except OSError:
+            pass
+
+    return (f'segment repaired: stop_frame {old_stop} -> {new_stop} '
+            f'(max_anno={max_anno_frame}, video={actual_frame_count})')
+
+
+# ---------------------------------------------------------------------------
+# Per-job processing
+# ---------------------------------------------------------------------------
+
+def _process_single_job(server_url: str, username: str, password: str,
+                        job: dict, dry_run: bool) -> dict:
+    """Process one job: repair -> export -> convert -> upload.
+
+    Each thread gets its own HTTP session via thread-local storage.
+    """
+    job_id = job['id']
+    task_id = job.get('task_id', '?')
+    task_name = ''
+
+    # Get per-thread session
+    opener, csrf_token = _get_thread_session(server_url, username, password)
+
+    try:
+        req = urllib.request.Request(f'{server_url}/api/tasks/{task_id}')
+        if csrf_token:
+            req.add_header('X-CSRFToken', csrf_token)
+        with opener.open(req) as resp:
+            task_data = json.loads(resp.read())
+        task_name = task_data.get('name', '')
+    except Exception:
+        pass
+
+    try:
+        # Repair segment if annotations reference out-of-range frames
+        repair_msg = _repair_segment_if_needed(job_id)
+        if repair_msg:
+            _safe_print(f'  [Job {job_id}] {repair_msg}')
+
+        target_w, target_h = fetch_job_dimensions(
+            server_url, job_id, opener, csrf_token,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_path = os.path.join(tmpdir, f'job_{job_id}_export.zip')
+            export_job_annotations(
+                server_url, job_id, export_path, opener, csrf_token,
+            )
+
+            with open(export_path, 'rb') as f:
+                is_zip = f.read(4) == b'PK\x03\x04'
+            if is_zip:
+                xml_path = extract_xml_from_zip(export_path, tmpdir)
+            else:
+                xml_path = export_path
+
+            file_size = os.path.getsize(xml_path)
+            if file_size < 50:
+                return {'type': 'skipped', 'job_id': job_id,
+                        'task': task_name, 'reason': 'empty annotations'}
+
+            converted_path = os.path.join(tmpdir, f'job_{job_id}_converted.xml')
+            stats = convert_annotations(
+                xml_path, converted_path, target_w, target_h, job_id=job_id,
+            )
+
+            if stats['src'] == stats['dst']:
+                return {'type': 'skipped', 'job_id': job_id,
+                        'task': task_name, 'reason': f'already {stats["src"]}'}
+
+            if stats['boxes'] == 0:
+                return {'type': 'skipped', 'job_id': job_id,
+                        'task': task_name, 'reason': 'no boxes'}
+
+            if dry_run:
+                return {'type': 'converted', 'job_id': job_id,
+                        'task': task_name, 'stats': stats, 'dry_run': True}
+
+            upload_annotations(
+                server_url, job_id, converted_path, opener, csrf_token,
+            )
+            return {'type': 'converted', 'job_id': job_id,
+                    'task': task_name, 'stats': stats}
+
+    except Exception as e:
+        return {'type': 'failed', 'job_id': job_id,
+                'task': task_name, 'error': str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Batch mode
+# ---------------------------------------------------------------------------
+
 def run_batch(args) -> int:
-    """Batch mode: iterate all jobs, export -> convert -> upload."""
+    """Batch mode: process all jobs with parallel workers."""
+    # Use a single session for initial job listing
     opener, csrf_token = get_cvat_session(
         args.server, None, args.user, args.password,
     )
@@ -420,105 +634,59 @@ def run_batch(args) -> int:
         all_jobs = [j for j in all_jobs if j['id'] in target_ids]
         print(f'Filtered to {len(all_jobs)} jobs: {sorted(target_ids)}')
 
+    if not all_jobs:
+        print('No jobs to process.')
+        return 0
+
+    workers = min(args.workers, len(all_jobs))
+    print(f'Processing {len(all_jobs)} jobs with {workers} parallel workers...\n')
+
+    # Pre-initialize Django ORM before spawning threads
+    _ensure_django()
+
     results = {'converted': [], 'skipped': [], 'failed': []}
+    t_start = time.monotonic()
 
-    for job in all_jobs:
-        job_id = job['id']
-        task_id = job.get('task_id', '?')
-        task_name = ''
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                _process_single_job,
+                args.server, args.user, args.password,
+                job, args.dry_run,
+            ): job
+            for job in all_jobs
+        }
 
-        try:
-            req = urllib.request.Request(f'{args.server}/api/tasks/{task_id}')
-            if csrf_token:
-                req.add_header('X-CSRFToken', csrf_token)
-            with opener.open(req) as resp:
-                task_data = json.loads(resp.read())
-            task_name = task_data.get('name', '')
-        except Exception:
-            pass
+        done_count = 0
+        for future in as_completed(futures):
+            done_count += 1
+            r = future.result()
+            job_id = r['job_id']
+            task_name = r.get('task', '')
+            progress = f'[{done_count}/{len(all_jobs)}]'
 
-        print(f'\n{"="*60}')
-        print(f'Job {job_id} (Task {task_id}: {task_name})')
-        print(f'{"="*60}')
+            if r['type'] == 'converted':
+                dry = ' [DRY-RUN]' if r.get('dry_run') else ''
+                _safe_print(f'{progress} Job {job_id} ({task_name}): '
+                            f'{r["stats"]["boxes"]} boxes '
+                            f'{r["stats"]["src"]} -> {r["stats"]["dst"]}{dry}')
+                results['converted'].append(r)
+            elif r['type'] == 'skipped':
+                _safe_print(f'{progress} Job {job_id} ({task_name}): '
+                            f'skipped ({r["reason"]})')
+                results['skipped'].append(r)
+            else:
+                _safe_print(f'{progress} Job {job_id} ({task_name}): '
+                            f'ERROR - {r["error"]}')
+                results['failed'].append(r)
 
-        try:
-            target_w, target_h = fetch_job_dimensions(
-                args.server, job_id, opener, csrf_token,
-            )
-            print(f'  Video dimensions: {target_w}x{target_h}')
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                export_path = os.path.join(tmpdir, f'job_{job_id}_export.xml')
-                print(f'  Exporting annotations...')
-                export_job_annotations(
-                    args.server, job_id, export_path, opener, csrf_token,
-                )
-
-                # Handle ZIP format
-                with open(export_path, 'rb') as f:
-                    is_zip = f.read(4) == b'PK\x03\x04'
-                if is_zip:
-                    xml_path = extract_xml_from_zip(export_path, tmpdir)
-                else:
-                    xml_path = export_path
-
-                file_size = os.path.getsize(xml_path)
-                if file_size < 50:
-                    print(f'  Skipping: empty annotations ({file_size} bytes)')
-                    results['skipped'].append({
-                        'job_id': job_id, 'task': task_name,
-                        'reason': 'empty annotations',
-                    })
-                    continue
-
-                converted_path = os.path.join(tmpdir, f'job_{job_id}_converted.xml')
-                stats = convert_annotations(xml_path, converted_path, target_w, target_h)
-
-                if stats['src'] == stats['dst']:
-                    print(f'  Skipping: dimensions already match ({stats["src"]})')
-                    results['skipped'].append({
-                        'job_id': job_id, 'task': task_name,
-                        'reason': f'already {stats["src"]}',
-                    })
-                    continue
-
-                if stats['boxes'] == 0:
-                    print(f'  Skipping: no boxes to convert')
-                    results['skipped'].append({
-                        'job_id': job_id, 'task': task_name,
-                        'reason': 'no boxes',
-                    })
-                    continue
-
-                if args.dry_run:
-                    print(f'  [DRY-RUN] Would convert {stats["boxes"]} boxes '
-                          f'from {stats["src"]} -> {stats["dst"]}')
-                    results['converted'].append({
-                        'job_id': job_id, 'task': task_name,
-                        'stats': stats, 'dry_run': True,
-                    })
-                else:
-                    print(f'  Uploading converted annotations...')
-                    upload_annotations(
-                        args.server, job_id, converted_path, opener, csrf_token,
-                    )
-                    print(f'  Done: {stats["boxes"]} boxes '
-                          f'from {stats["src"]} -> {stats["dst"]}')
-                    results['converted'].append({
-                        'job_id': job_id, 'task': task_name,
-                        'stats': stats,
-                    })
-
-        except Exception as e:
-            print(f'  ERROR: {e}')
-            results['failed'].append({
-                'job_id': job_id, 'task': task_name,
-                'error': str(e),
-            })
+    elapsed = time.monotonic() - t_start
 
     print(f'\n{"="*60}')
     print('MIGRATION SUMMARY')
     print(f'{"="*60}')
+    print(f'Workers:   {workers}')
+    print(f'Time:      {elapsed:.1f}s')
     print(f'Converted: {len(results["converted"])} jobs')
     for r in results['converted']:
         dry = ' [DRY-RUN]' if r.get('dry_run') else ''
@@ -534,6 +702,10 @@ def run_batch(args) -> int:
 
     return 1 if results['failed'] else 0
 
+
+# ---------------------------------------------------------------------------
+# Single-job mode
+# ---------------------------------------------------------------------------
 
 def run_single(args) -> int:
     """Single-job mode: convert one XML file."""
@@ -569,6 +741,10 @@ def run_single(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
         description='Convert annotation coordinates from master to refactor resolution',
@@ -578,8 +754,11 @@ Examples:
   # Batch: convert ALL jobs (dry-run):
   %(prog)s --all-jobs --user admin --password admin123 --dry-run
 
-  # Batch: convert ALL jobs (actual):
-  %(prog)s --all-jobs --user admin --password admin123
+  # Batch: convert ALL jobs (16 workers):
+  %(prog)s --all-jobs --user admin --password admin123 --workers 16
+
+  # Batch: 32 parallel workers:
+  %(prog)s --all-jobs --user admin --password admin123 --workers 32
 
   # Batch: specific jobs only:
   %(prog)s --all-jobs --user admin --password admin123 --job-ids 7,8,9
@@ -599,6 +778,8 @@ Examples:
                         help='Batch mode: process all jobs')
     parser.add_argument('--job-ids', type=str, default=None,
                         help='Comma-separated job IDs (batch mode only)')
+    parser.add_argument('--workers', type=int, default=16,
+                        help='Number of parallel workers (default: 16)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would be converted without uploading')
     parser.add_argument('--target-w', type=int, help='Target width (single-job mode)')
