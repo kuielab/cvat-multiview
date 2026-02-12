@@ -10,9 +10,9 @@ scripts/
 ├── test/                  # 테스트 Task 생성 및 검증 스크립트
 ├── backup/                # 백업 관련
 └── migration/             # Master → Refactor 마이그레이션 도구
-    ├── README.md          # 상세 문서 + 히스토리
-    ├── convert_annotations.sh         # Shell wrapper
-    └── convert_annotation_coords.py   # 좌표 변환 Python 스크립트
+    ├── README.md          # 상세 문서
+    ├── migrate_v1.sh      # Shell wrapper (Docker 컨테이너에서 batch 실행)
+    └── migrate_v1.py      # 핵심 로직 (batch + 단일 job 모드)
 ```
 
 ---
@@ -25,16 +25,17 @@ Master에서 ffprobe 미설치로 인해 1920x1080 fallback 저장된 좌표를
 Refactor의 실제 비디오 해상도(예: 320x240)로 변환합니다.
 Hybrid Scaling 방식으로 bbox 비율을 보존하면서 위치를 정확히 매핑합니다.
 
-```bash
-# 권장 사용법 (API 자동 감지 + 업로드):
-python scripts/migration/convert_annotation_coords.py \
-    input.xml output.xml \
-    --job-id 7 --user admin --password admin123 --upload
+bbox 좌표 범위로 변환 필요 여부를 자동 판단하며, 멱등성을 보장합니다.
 
-# Shell wrapper:
-bash scripts/migration/convert_annotations.sh \
-    input.xml \
-    --job-id 7 --user admin --password admin123 --upload
+```bash
+# 전체 일괄 마이그레이션 (권장):
+bash scripts/migration/migrate_v1.sh --user admin --password admin123
+
+# Dry-run (확인만):
+bash scripts/migration/migrate_v1.sh --user admin --password admin123 --dry-run
+
+# 특정 job만:
+bash scripts/migration/migrate_v1.sh --user admin --password admin123 --job-ids 7,8,9
 ```
 
 상세 문서: [`migration/README.md`](migration/README.md)

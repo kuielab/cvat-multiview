@@ -71,9 +71,9 @@ API: `POST /api/tasks/create_multiview/`
 
 ### 좌표 시스템
 
-- Canvas 공간: 1920 × 1440 (비디오 4:3 비율에 맞춤)
-- Task 공간: 1920 × 1080 (백엔드 저장)
-- Y 스케일: canvas→task = 0.75 (1080/1440)
+- Canvas 공간: 실제 비디오 해상도 (예: 320×240)
+- Task 공간: 실제 비디오 해상도 (백엔드 저장)
+- Master에서 ffprobe 미설치로 1920×1080 fallback 저장되었던 문제 → Refactor에서 해결
 
 ---
 
@@ -103,8 +103,25 @@ API: `POST /api/tasks/create_multiview/`
 | Multi-class 모드에서 Sound 라벨 잔존 | DELETE `/api/labels/{id}` 사용 | `insert_bbox_annotations.py` |
 | Pre-annotation 편집 시 다른 annotation 영향 | `cloneObjectStateForDisplay()` (non-enumerable 속성 명시적 복사) | `multiview-canvas-wrapper.tsx` |
 | Shape 뷰 경계 드래그 시 축소 | videoElement 실제 치수 우선 + `clampPointsToCanvasBounds()` | `multiview-canvas-wrapper.tsx` |
-| 작은 Shape 드래그 시 크기 축소 | `enforceMinimumShapeDimensions()` (resize handle 겹침 보정) | `multiview-canvas-wrapper.tsx` |
-| 반복 리사이즈 시 Shape 사라짐 | `normalizeAndEnforceTaskSpaceDimensions()` (최소 치수 2px 강제) | `multiview-canvas-wrapper.tsx` |
+
+---
+
+## Migration (Master → Refactor)
+
+Master에서 생성된 annotation은 가짜 1920x1080 좌표 공간에 저장되어 있음.
+`migrate_v1.sh`로 모든 job의 annotation을 실제 비디오 해상도로 일괄 변환.
+
+```bash
+# 전체 마이그레이션 (권장)
+bash scripts/migration/migrate_v1.sh --user admin --password admin123
+
+# Dry-run
+bash scripts/migration/migrate_v1.sh --user admin --password admin123 --dry-run
+```
+
+동작: annotation export → Hybrid Scaling 좌표 변환 → 기존 삭제 → 업로드
+판단: bbox 좌표 범위로 자동 감지 (멱등, 여러 번 실행 안전)
+상세: [`scripts/migration/README.md`](scripts/migration/README.md)
 
 ---
 
