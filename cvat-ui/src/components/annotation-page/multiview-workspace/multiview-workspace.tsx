@@ -8,7 +8,14 @@ import Layout from 'antd/lib/layout';
 import Select from 'antd/lib/select';
 
 import { CombinedState, ActiveControl } from 'reducers';
-import { changeFrameAsync, switchPlay } from 'actions/annotation-actions';
+import {
+    changeFrameAsync,
+    switchPlay,
+    setCanvasInstance,
+    updateActiveControl as updateActiveControlAction,
+    updateCanvasContextMenu,
+} from 'actions/annotation-actions';
+import { Canvas } from 'cvat-canvas-wrapper';
 import ControlsSideBarContainer from 'containers/annotation-page/standard-workspace/controls-side-bar/controls-side-bar';
 import ObjectSideBarComponent from 'components/annotation-page/standard-workspace/objects-side-bar/objects-side-bar';
 import CanvasContextMenuContainer from 'containers/annotation-page/canvas/canvas-context-menu';
@@ -62,6 +69,7 @@ export default function MultiviewWorkspace(): JSX.Element {
     const lastFrameRef = useRef<number>(-1);
     const videoRefsMap = useRef<Map<number, HTMLVideoElement>>(new Map());
     const syncIntervalRef = useRef<number | null>(null);
+    const canvasInstancesRef = useRef<Map<number, Canvas>>(new Map());
     // Use a ref to track playing state synchronously to avoid race conditions
     // This ref is updated BEFORE starting/stopping playback to prevent seek effect from triggering
     const playingRef = useRef<boolean>(false);
@@ -72,6 +80,7 @@ export default function MultiviewWorkspace(): JSX.Element {
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
     const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
+    const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
 
     // Track previous activeControl to detect transitions into draw mode
     const prevActiveControlRef = useRef<ActiveControl>(activeControl);
@@ -424,6 +433,37 @@ export default function MultiviewWorkspace(): JSX.Element {
         setCanvasContainer(container);
         setVideoElement(video);
     }, []);
+
+    // Canvas instance management: create or reuse per-view Canvas, dispatch to Redux
+    useEffect(() => {
+        let instance = canvasInstancesRef.current.get(activeView);
+        if (!instance) {
+            instance = new Canvas();
+            canvasInstancesRef.current.set(activeView, instance);
+        }
+
+        dispatch(setCanvasInstance(instance));
+        dispatch(updateActiveControlAction(ActiveControl.CURSOR));
+        dispatch(updateCanvasContextMenu(false, 0, 0));
+    }, [activeView, dispatch]);
+
+    // Cleanup all Canvas instances on unmount
+    useEffect(() => {
+        return () => {
+            canvasInstancesRef.current.forEach((instance) => instance.destroy());
+            canvasInstancesRef.current.clear();
+        };
+    }, []);
+
+    // Cancel in-progress canvas operations on view change
+    useEffect(() => {
+        if (!canvasInstance) return;
+        try {
+            canvasInstance.cancel();
+        } catch {
+            // Ignore if canvas is not in a cancelable state
+        }
+    }, [canvasInstance, activeView]);
 
     return (
         <Layout hasSider className='cvat-multiview-workspace'>

@@ -111,6 +111,7 @@ export enum AnnotationActionTypes {
     PASTE_SHAPE = 'PASTE_SHAPE',
     REPEAT_DRAW_SHAPE = 'REPEAT_DRAW_SHAPE',
     RESET_CANVAS = 'RESET_CANVAS',
+    SET_CANVAS_INSTANCE = 'SET_CANVAS_INSTANCE',
     REMEMBER_OBJECT = 'REMEMBER_OBJECT',
     UPDATE_ANNOTATIONS_SUCCESS = 'UPDATE_ANNOTATIONS_SUCCESS',
     UPDATE_ANNOTATIONS_FAILED = 'UPDATE_ANNOTATIONS_FAILED',
@@ -895,6 +896,13 @@ export function resetCanvas(): AnyAction {
     return {
         type: AnnotationActionTypes.RESET_CANVAS,
         payload: {},
+    };
+}
+
+export function setCanvasInstance(instance: Canvas | null): AnyAction {
+    return {
+        type: AnnotationActionTypes.SET_CANVAS_INSTANCE,
+        payload: { instance },
     };
 }
 

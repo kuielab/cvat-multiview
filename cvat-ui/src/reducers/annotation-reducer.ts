@@ -1095,6 +1095,16 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                 },
             };
         }
+        case AnnotationActionTypes.SET_CANVAS_INSTANCE: {
+            return {
+                ...state,
+                canvas: {
+                    ...state.canvas,
+                    instance: action.payload.instance,
+                    ready: false,
+                },
+            };
+        }
         case AnnotationActionTypes.SWITCH_NAVIGATION_BLOCKED: {
             return {
                 ...state,
