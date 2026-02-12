@@ -17,3 +17,6 @@ nul
 
 # Yarn
 .yarn/
+
+# E2E test auth state
+tests/e2e/storage-state.json

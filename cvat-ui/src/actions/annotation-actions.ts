@@ -175,6 +175,7 @@ export enum AnnotationActionTypes {
     UPDATE_BRUSH_TOOLS_CONFIG = 'UPDATE_BRUSH_TOOLS_CONFIG',
     HIGHLIGHT_CONFLICT = 'HIGHLIGHT_CONFCLICT',
     HOVERED_CHAPTER = 'HOVERED_CHAPTER',
+    SET_CANVAS_INSTANCE = 'SET_CANVAS_INSTANCE',
 }
 
 export function setHoveredChapter(id: number | null): AnyAction {
@@ -182,6 +183,15 @@ export function setHoveredChapter(id: number | null): AnyAction {
         type: AnnotationActionTypes.HOVERED_CHAPTER,
         payload: {
             id,
+        },
+    };
+}
+
+export function setCanvasInstance(instance: Canvas | Canvas3d | null): AnyAction {
+    return {
+        type: AnnotationActionTypes.SET_CANVAS_INSTANCE,
+        payload: {
+            instance,
         },
     };
 }
@@ -285,10 +295,10 @@ async function fetchAnnotations(predefinedFrame?: number): Promise<{
     const fetchFrame = typeof predefinedFrame === 'undefined' ? frame : predefinedFrame;
     let states = await jobInstance.annotations.get(fetchFrame, showAllInterpolationTracks, filters);
 
-    // Debug logging for SHAPE/TRACK verification
-    const shapesCount = states.filter((s: any) => s.objectType === 'shape').length;
-    const tracksCount = states.filter((s: any) => s.objectType === 'track').length;
-    console.log(`[fetchAnnotations] frame=${fetchFrame}, shapes=${shapesCount}, tracks=${tracksCount}`);
+    // Debug logging disabled for performance (was firing every frame during playback)
+    // const shapesCount = states.filter((s: any) => s.objectType === 'shape').length;
+    // const tracksCount = states.filter((s: any) => s.objectType === 'track').length;
+    // console.log(`[fetchAnnotations] frame=${fetchFrame}, shapes=${shapesCount}, tracks=${tracksCount}`);
 
     const [minZ, maxZ] = computeZRange(states);
 
@@ -710,7 +720,33 @@ export function changeFrameAsync(
                 return;
             }
 
-            const data = await job.frames.get(toFrame, fillBuffer, frameStep);
+            // For multiview tasks, disable chunk buffer prefetch to prevent
+            // 500 errors from standard chunk endpoint (index=NaN).
+            // Multiview frame loading is handled by the proxy in multiview-canvas-wrapper.
+            const isMultiview = state.annotation.workspace === Workspace.MULTIVIEW;
+            const effectiveFillBuffer = isMultiview ? false : fillBuffer;
+
+            let data;
+            try {
+                data = await job.frames.get(toFrame, effectiveFillBuffer, frameStep);
+            } catch (frameError) {
+                if (isMultiview) {
+                    // Multiview tasks may fail standard frame loading because chunk
+                    // index calculation produces NaN. Provide a minimal frameData
+                    // object since the actual image is loaded via multiview proxy.
+                    data = {
+                        number: toFrame,
+                        filename: '',
+                        relatedFiles: 0,
+                        width: 0,
+                        height: 0,
+                        deleted: false,
+                        data: async () => null,
+                    };
+                } else {
+                    throw frameError;
+                }
+            }
 
             dispatch({
                 type: AnnotationActionTypes.CHANGE_FRAME,
@@ -747,9 +783,6 @@ export function changeFrameAsync(
             const {
                 states, maxZ, minZ, history,
             } = await fetchAnnotations(toFrame);
-
-            // Debug logging for frame change
-            console.log(`[changeFrameAsync] Frame ${frame} -> ${toFrame}, fetched ${states.length} annotations`);
 
             dispatch({
                 type: AnnotationActionTypes.CHANGE_FRAME_SUCCESS,
@@ -899,13 +932,6 @@ export function resetCanvas(): AnyAction {
     };
 }
 
-export function setCanvasInstance(instance: Canvas | null): AnyAction {
-    return {
-        type: AnnotationActionTypes.SET_CANVAS_INSTANCE,
-        payload: { instance },
-    };
-}
-
 export function closeJob(): ThunkAction {
     return async (dispatch: ThunkDispatch, getState): Promise<void> => {
         const state = getState();
@@ -1043,7 +1069,7 @@ export function getJobAsync({
                     const videoData = apiResponse?.[viewKey];
                     videos[`view${i}`] = {
                         url: `/api/tasks/${taskID}/multiview/video/${i}`,
-                        fps: 30, // Will be updated from metadata if available
+                        fps: videoData?.fps || 30,
                         width: videoData?.width || 0,
                         height: videoData?.height || 0,
                     };

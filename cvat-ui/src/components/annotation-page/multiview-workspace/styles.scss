@@ -63,7 +63,6 @@
 
     .multiview-grid-row {
         flex: 0 0 auto;
-        min-height: 180px;
         display: flex;
         gap: 8px;
 
@@ -115,8 +114,7 @@
             overflow: hidden;
 
             // Zoom wrapper: contains video + canvas overlay.
-            // CSS transform (scale + translate) is applied via inline style
-            // to zoom both video image and annotation bbox together.
+            // Canvas-only: wrapper is used for layout, zoom/pan handled by canvas.
             .zoom-wrapper {
                 width: 100%;
                 height: 100%;
@@ -124,13 +122,6 @@
                 display: flex;
                 align-items: center;
                 justify-content: center;
-            }
-
-            .multiview-video {
-                width: 100%;
-                height: 100%;
-                object-fit: contain;
-                background-color: #000;
             }
 
             .annotation-canvas-overlay {
@@ -151,10 +142,8 @@
                     background-color: transparent !important;
                 }
 
-                // Make canvas background transparent
-                #cvat_canvas_background {
-                    display: none !important;
-                }
+                // Canvas background is visible in canvas-only mode (no <video> elements)
+                // The frame image is drawn into this canvas by canvasView.ts IMAGE_CHANGED handler
 
                 // SVG canvas elements
                 #cvat_canvas_content {
@@ -182,6 +171,64 @@
                 // the drawHandler sets inline fill-opacity attribute which overrides CSS
                 .cvat_canvas_shape_drawing {
                     fill: transparent !important;
+                }
+            }
+
+            .multiview-preview-container {
+                position: relative;
+                width: 100%;
+                height: 100%;
+            }
+
+            .multiview-video-preview {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+                background-color: #000;
+                display: block;
+            }
+
+            .multiview-preview-bbox-overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+            }
+
+            .annotation-canvas-preview {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+                z-index: 4;
+
+                #cvat_canvas_wrapper {
+                    width: 100% !important;
+                    height: 100% !important;
+                    margin: 0 !important;
+                    background-color: transparent !important;
+                }
+
+                // Canvas background is visible in canvas-only mode for preview too
+
+                #cvat_canvas_content {
+                    background: transparent !important;
+                }
+
+                #cvat_canvas_grid {
+                    display: none !important;
+                }
+
+                #cvat_canvas_text_content {
+                    background: transparent !important;
+                }
+
+                #cvat_canvas_bitmap {
+                    background: transparent !important;
                 }
             }
 

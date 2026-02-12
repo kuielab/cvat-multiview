@@ -387,6 +387,14 @@ class Data(models.Model):
             self._get_chunk_name(segment_id, chunk_number, self.get_chunk_type(quality)),
         )
 
+    def get_static_multiview_chunk_path(
+        self, view_id: int, chunk_number: int, quality: FrameQuality
+    ) -> Path:
+        chunk_type = self.get_chunk_type(quality)
+        ext = 'mp4' if chunk_type == DataChoice.VIDEO else 'zip'
+        name = f'view_{view_id}-{chunk_number}.{ext}'
+        return Path(self.get_static_cache_dirname(quality), name)
+
     def get_manifest_path(self) -> Path:
         return self.get_upload_dirname() / self.MANIFEST_FILENAME
 

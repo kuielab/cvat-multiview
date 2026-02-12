@@ -743,13 +743,15 @@ def process_multisensor_dataset(
             tasks_skipped += 1
             continue
 
-        # Get frame dimensions from first frame
+        # Get frame dimensions from first frame metadata
         frames = meta.get('frames', [])
-        if frames:
-            width = frames[0].get('width', 1920)
-            height = frames[0].get('height', 1080)
+        if frames and frames[0].get('width') and frames[0].get('height'):
+            width = frames[0]['width']
+            height = frames[0]['height']
         else:
-            width, height = 1920, 1080
+            print(f"    [SKIP] Could not determine video dimensions from metadata")
+            tasks_skipped += 1
+            continue
 
         cx, cy = width / 2, height / 2
         print(f"    Dimensions: {width}x{height}")
@@ -992,11 +994,13 @@ def process_mmoffice_dataset(
                 continue
 
             frames = meta.get('frames', [])
-            if frames:
-                width = frames[0].get('width', 1920)
-                height = frames[0].get('height', 1080)
+            if frames and frames[0].get('width') and frames[0].get('height'):
+                width = frames[0]['width']
+                height = frames[0]['height']
             else:
-                width, height = 1920, 1080
+                print(f"      [SKIP] Could not determine video dimensions from metadata")
+                tasks_skipped += 1
+                continue
 
             cx, cy = width / 2, height / 2
 

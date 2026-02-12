@@ -1641,6 +1641,61 @@ async function getData(jid: number, chunk: number, quality: ChunkQuality, retry 
     }
 }
 
+async function getMultiviewData(
+    taskId: number,
+    viewId: number,
+    chunk: number,
+    quality: ChunkQuality,
+    retry = 0,
+): Promise<ArrayBuffer> {
+    const { backendAPI } = config;
+
+    try {
+        const response = await (workerAxios as any).get(`${backendAPI}/tasks/${taskId}/multiview/data/${viewId}`, {
+            params: {
+                ...enableOrganization(),
+                quality,
+                type: 'chunk',
+                index: chunk,
+            },
+            responseType: 'arraybuffer',
+        });
+
+        const contentLength = +(response.headers || {})['content-length'];
+        if (Number.isInteger(contentLength) && response.data.byteLength < +contentLength) {
+            if (retry < 10) {
+                setTimeout(() => {
+                    throw new Error(
+                        `Truncated chunk, try: ${retry}. Task: ${taskId}, view: ${viewId}, ` +
+                        `chunk: ${chunk}, quality: ${quality}. Body size: ${response.data.byteLength}`,
+                    );
+                });
+                return await getMultiviewData(taskId, viewId, chunk, quality, retry + 1);
+            }
+
+            throw new Error(
+                `Truncated chunk. Task: ${taskId}, view: ${viewId}, chunk: ${chunk}, ` +
+                `quality: ${quality}. Body size: ${response.data.byteLength}`,
+            );
+        }
+
+        return response.data;
+    } catch (errorData) {
+        throw generateError(errorData);
+    }
+}
+
+async function getMultiviewMeta(taskId: number, viewId: number): Promise<SerializedFramesMetaData> {
+    const { backendAPI } = config;
+
+    try {
+        const response = await Axios.get(`${backendAPI}/tasks/${taskId}/multiview/data/${viewId}/meta`);
+        return response.data;
+    } catch (errorData) {
+        throw generateError(errorData);
+    }
+}
+
 async function getMeta(session: 'job' | 'task', id: number): Promise<SerializedFramesMetaData> {
     const { backendAPI } = config;
 
@@ -2547,6 +2602,10 @@ export default Object.freeze({
         saveMeta,
         getPreview,
         getImageContext,
+    }),
+    multiview: Object.freeze({
+        getData: getMultiviewData,
+        getMeta: getMultiviewMeta,
     }),
 
     annotations: Object.freeze({

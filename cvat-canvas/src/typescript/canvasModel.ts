@@ -472,9 +472,6 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
     }
 
     public zoom(x: number, y: number, deltaY: number): void {
-        // When viewport is locked (multiview mode), CSS transform handles zoom
-        if (this.data.viewportLocked) return;
-
         const basicZoomCoef = 6 / 5; // historical value
         // less value of adjust coef, means zoomin/zoomout smoother
         // we need a trade-off between speed and smoothness, value 1 / 10 is good enough
@@ -487,31 +484,37 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
             scaleFactor = basicZoomCoef ** (Math.sign(-deltaY));
         }
         const newScale: number = oldScale * scaleFactor;
-        this.data.scale = Math.min(Math.max(newScale, FrameZoom.MIN), FrameZoom.MAX);
+        const minScale = this.data.viewportLocked && this.data.fittedScale > 0
+            ? this.data.fittedScale
+            : FrameZoom.MIN;
+        this.data.scale = Math.min(Math.max(newScale, minScale), FrameZoom.MAX);
 
-        const { angle } = this.data;
-
-        const multiplier = Math.sin((angle * Math.PI) / 180) + Math.cos((angle * Math.PI) / 180);
-        if ((angle / 90) % 2) {
-            // 90, 270, ..
-            const topMultiplier = (x - this.data.imageSize.width / 2) * (oldScale / this.data.scale - 1);
-            const leftMultiplier = (y - this.data.imageSize.height / 2) * (oldScale / this.data.scale - 1);
-            this.data.top += multiplier * topMultiplier * this.data.scale;
-            this.data.left -= multiplier * leftMultiplier * this.data.scale;
+        if (this.data.viewportLocked && this.data.scale <= this.data.fittedScale) {
+            // At fit scale, snap to centered position (undo any pan offset)
+            this.data.top = this.data.canvasSize.height / 2 - this.data.imageSize.height / 2;
+            this.data.left = this.data.canvasSize.width / 2 - this.data.imageSize.width / 2;
         } else {
-            const leftMultiplier = (x - this.data.imageSize.width / 2) * (oldScale / this.data.scale - 1);
-            const topMultiplier = (y - this.data.imageSize.height / 2) * (oldScale / this.data.scale - 1);
-            this.data.left += multiplier * leftMultiplier * this.data.scale;
-            this.data.top += multiplier * topMultiplier * this.data.scale;
+            const { angle } = this.data;
+
+            const multiplier = Math.sin((angle * Math.PI) / 180) + Math.cos((angle * Math.PI) / 180);
+            if ((angle / 90) % 2) {
+                // 90, 270, ..
+                const topMultiplier = (x - this.data.imageSize.width / 2) * (oldScale / this.data.scale - 1);
+                const leftMultiplier = (y - this.data.imageSize.height / 2) * (oldScale / this.data.scale - 1);
+                this.data.top += multiplier * topMultiplier * this.data.scale;
+                this.data.left -= multiplier * leftMultiplier * this.data.scale;
+            } else {
+                const leftMultiplier = (x - this.data.imageSize.width / 2) * (oldScale / this.data.scale - 1);
+                const topMultiplier = (y - this.data.imageSize.height / 2) * (oldScale / this.data.scale - 1);
+                this.data.left += multiplier * leftMultiplier * this.data.scale;
+                this.data.top += multiplier * topMultiplier * this.data.scale;
+            }
         }
 
         this.notify(UpdateReasons.IMAGE_ZOOMED);
     }
 
     public move(topOffset: number, leftOffset: number): void {
-        // When viewport is locked (multiview mode), CSS transform handles pan
-        if (this.data.viewportLocked) return;
-
         this.data.top += topOffset;
         this.data.left += leftOffset;
         this.notify(UpdateReasons.IMAGE_MOVED);
@@ -677,10 +680,10 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
 
                 this.data.image = data;
 
-                // When the viewport is locked (multiview mode), CSS transform handles
-                // zoom/pan and the geometry set by fit()+lockViewport() is authoritative.
-                // resetScale() and the position-restoration block would overwrite those
-                // values with stale pre-fit() state, causing bbox misalignment on refresh.
+                // When the viewport is locked (multiview mode), the geometry set by
+                // fit()+lockViewport() is authoritative. resetScale() and the
+                // position-restoration block would overwrite current zoom/pan state,
+                // causing bbox misalignment on refresh.
                 if (!this.data.viewportLocked) {
                     this.resetScale();
 
@@ -1256,8 +1259,15 @@ export class CanvasModelImpl extends MasterImpl implements CanvasModel {
     }
 
     public setViewId(viewId: number | null): void {
-        this.data.viewId = viewId;
-        this.notify(UpdateReasons.OBJECTS_UPDATED);
+        if (this.data.viewId !== viewId) {
+            this.data.viewId = viewId;
+            // Invalidate imageID so the next setup() call re-fetches the
+            // image for the new view instead of early-returning (same frame).
+            // The multiview proxy's data() ignores the clear callback, so the
+            // old image stays visible until the new one arrives (no flash).
+            this.data.imageID = -1;
+            this.notify(UpdateReasons.OBJECTS_UPDATED);
+        }
     }
 
     public get viewId(): number | null {

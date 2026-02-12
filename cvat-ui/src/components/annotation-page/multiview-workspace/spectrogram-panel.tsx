@@ -37,6 +37,7 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
     const [loadingStatus, setLoadingStatus] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [audioDuration, setAudioDuration] = useState(0);
+    const currentTimeRef = useRef<number>(0);
 
     const dispatch = useDispatch();
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
@@ -48,6 +49,10 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
     const fps = (multiviewData?.videos as MultiviewVideos | undefined)?.view1?.fps || 30;
     const currentTime = frameNumber / fps;
     const duration = audioDuration || (job ? (job.stopFrame - job.startFrame) / fps : 100);
+
+    useEffect(() => {
+        currentTimeRef.current = currentTime;
+    }, [currentTime]);
 
     // Initialize audio engine when component mounts
     useEffect(() => {
@@ -257,13 +262,8 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         if (!playing || !spectrogramData) return;
 
         let animationId: number;
-        // Get the primary video element to read currentTime directly
-        const primaryVideo = document.querySelector('.multiview-video') as HTMLVideoElement;
-
         const animate = (): void => {
-            if (primaryVideo && !primaryVideo.paused) {
-                drawPlayheadOnly(primaryVideo.currentTime);
-            }
+            drawPlayheadOnly(currentTimeRef.current);
             animationId = requestAnimationFrame(animate);
         };
 
@@ -321,16 +321,12 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         setLoadingStatus('Collecting video sources...');
 
         try {
-            // Get all video elements from the page
-            const videoElements = Array.from(
-                document.querySelectorAll('.multiview-video'),
-            ) as HTMLVideoElement[];
-
-            if (videoElements.length === 0) {
-                throw new Error('No video elements found');
-            }
-
-            const urls = videoElements.map((v) => v.src).filter((src) => src);
+            // Prefer metadata URLs to avoid DOM dependence
+            const urlsFromMetadata = multiviewData?.videos ?
+                Object.values(multiviewData.videos)
+                    .map((v) => v?.url)
+                    .filter((src): src is string => !!src) : [];
+            const urls = urlsFromMetadata;
 
             if (urls.length === 0) {
                 throw new Error('No video URLs available');

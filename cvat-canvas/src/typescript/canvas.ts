@@ -43,6 +43,7 @@ interface Canvas {
     select(objectState: any): void;
 
     fitCanvas(width?: number, height?: number): void;
+    move(topOffset: number, leftOffset: number): void;
     bitmap(enable: boolean): void;
     selectRegion(enable: boolean): void;
     dragCanvas(enable: boolean): void;
@@ -96,6 +97,10 @@ class CanvasImpl implements Canvas {
         const w = width ?? this.view.html().clientWidth;
         const h = height ?? this.view.html().clientHeight;
         this.model.fitCanvas(w, h);
+    }
+
+    public move(topOffset: number, leftOffset: number): void {
+        this.model.move(topOffset, leftOffset);
     }
 
     public bitmap(enable: boolean): void {

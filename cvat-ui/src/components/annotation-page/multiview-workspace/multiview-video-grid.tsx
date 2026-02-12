@@ -7,30 +7,23 @@ import { useSelector } from 'react-redux';
 import { CombinedState } from 'reducers';
 
 import VideoCanvas from './video-canvas';
-import { ZoomState } from './multiview-workspace';
 
 interface Props {
     activeView: number;
+    playbackRate: number;
     onViewSelect: (view: number) => void;
-    playbackRate?: number;
-    onCanvasContainerReady?: (container: HTMLDivElement | null, videoElement: HTMLVideoElement | null) => void;
-    onVideoRef?: (viewId: number, video: HTMLVideoElement | null) => void;
-    zoomState?: ZoomState;
+    onCanvasContainerReady?: (container: HTMLDivElement | null) => void;
     onPan?: (dx: number, dy: number) => void;
     onZoomReset?: () => void;
 }
 
 interface ViewConfig {
     viewId: number;
-    url: string;
-    fps: number;
 }
 
 export default function MultiviewVideoGrid(props: Props): JSX.Element {
-    const { activeView, onViewSelect, playbackRate, onCanvasContainerReady, onVideoRef, zoomState, onPan, onZoomReset } = props;
+    const { activeView, playbackRate, onViewSelect, onCanvasContainerReady, onPan, onZoomReset } = props;
 
-    const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
-    const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
     const multiviewData = useSelector((state: CombinedState) => state.annotation.multiviewData);
 
     // Collect available views dynamically (supports 1-10 views)
@@ -43,8 +36,6 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
             if (viewData?.url) {
                 availableViews.push({
                     viewId: i,
-                    url: viewData.url,
-                    fps: viewData.fps || 30,
                 });
             }
         }
@@ -63,11 +54,19 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
     // Single view mode - show full width
     const isSingleView = availableViews.length === 1;
 
+    // Get video aspect ratio from first available view (all views share the same dimensions)
+    const firstView = availableViews[0];
+    const firstViewKey = `view${firstView.viewId}` as keyof typeof multiviewData.videos;
+    const firstViewData = multiviewData?.videos?.[firstViewKey];
+    const videoWidth = firstViewData?.width || 320;
+    const videoHeight = firstViewData?.height || 240;
+
     // Render a cell for a given view
     const renderCell = (view: ViewConfig): JSX.Element => (
         <div
             key={view.viewId}
             className={`multiview-cell ${activeView === view.viewId ? 'active' : ''}`}
+            style={{ aspectRatio: `${videoWidth} / ${videoHeight}` }}
             onClick={() => onViewSelect(view.viewId)}
             role='button'
             tabIndex={0}
@@ -75,15 +74,9 @@ export default function MultiviewVideoGrid(props: Props): JSX.Element {
         >
             <VideoCanvas
                 viewId={view.viewId}
-                frameNumber={frameNumber}
-                videoUrl={view.url}
-                fps={view.fps}
                 isActive={activeView === view.viewId}
-                playing={playing}
                 playbackRate={playbackRate}
                 onCanvasContainerReady={activeView === view.viewId ? onCanvasContainerReady : undefined}
-                onVideoRef={onVideoRef}
-                zoomState={activeView === view.viewId ? zoomState : undefined}
                 onPan={activeView === view.viewId ? onPan : undefined}
                 onZoomReset={activeView === view.viewId ? onZoomReset : undefined}
             />
