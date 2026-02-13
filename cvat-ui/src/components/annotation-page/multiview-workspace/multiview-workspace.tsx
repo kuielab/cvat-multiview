@@ -58,6 +58,10 @@ export default function MultiviewWorkspace(): JSX.Element {
     // Use a ref to track playing state synchronously to avoid race conditions
     // This ref is updated BEFORE starting/stopping playback to prevent seek effect from triggering
     const playingRef = useRef<boolean>(false);
+    // Hidden audio-only video: plays the active view's audio track
+    const audioVideoRef = useRef<HTMLVideoElement>(null);
+    const audioPrevPlayingRef = useRef<boolean>(false);
+    const audioLoadedUrlRef = useRef<string>('');
 
     const dispatch = useDispatch();
     const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
@@ -72,6 +76,10 @@ export default function MultiviewWorkspace(): JSX.Element {
 
     // Get FPS from multiview data, fallback to 30
     const fps = multiviewData?.videos?.view1?.fps || 30;
+
+    // Audio URL for the currently active view
+    const audioViewKey = `view${activeView}` as keyof typeof multiviewData.videos;
+    const audioUrl = multiviewData?.videos?.[audioViewKey]?.url || '';
 
     // Use ref for frameNumber to avoid recreating callbacks on every frame change
     const frameNumberRef = useRef(frameNumber);
@@ -175,12 +183,69 @@ export default function MultiviewWorkspace(): JSX.Element {
         };
     }, [playing, fps, job, dispatch, playbackRate]);
 
-    // Handle audio engine initialization
-    // Note: We intentionally do NOT call engine.initialize(videos) here because
-    // createMediaElementSource() hijacks the video's audio output and routes it
-    // through the Web Audio API. This breaks normal video.muted control.
-    // The spectrogram generation uses fetchAndDecodeAudio() instead, which
-    // fetches and decodes the video file separately without affecting playback.
+    // Audio: load new source when active view changes
+    useEffect(() => {
+        const video = audioVideoRef.current;
+        if (!video || !audioUrl || audioUrl === audioLoadedUrlRef.current) return undefined;
+        audioLoadedUrlRef.current = audioUrl;
+
+        video.pause();
+        video.src = audioUrl;
+
+        const syncAfterLoad = (): void => {
+            video.currentTime = frameNumberRef.current / fps;
+            if (playingRef.current) {
+                video.playbackRate = playbackRate;
+                video.play().catch(() => { /* autoplay policy */ });
+            }
+            audioPrevPlayingRef.current = playingRef.current;
+        };
+
+        video.addEventListener('canplay', syncAfterLoad, { once: true });
+        return () => video.removeEventListener('canplay', syncAfterLoad);
+    }, [audioUrl, fps, playbackRate]);
+
+    // Audio: sync play/pause/seek with canvas clock
+    useEffect(() => {
+        const video = audioVideoRef.current;
+        if (!video || !audioUrl || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+
+        const wasPlaying = audioPrevPlayingRef.current;
+        audioPrevPlayingRef.current = playing;
+
+        if (playing && !wasPlaying) {
+            video.currentTime = frameNumberRef.current / fps;
+            video.playbackRate = playbackRate;
+            video.play().catch(() => { /* autoplay policy */ });
+        } else if (!playing && wasPlaying) {
+            video.pause();
+            video.currentTime = frameNumberRef.current / fps;
+        } else if (!playing) {
+            video.currentTime = frameNumberRef.current / fps;
+        }
+    }, [playing, frameNumber, fps, audioUrl, playbackRate]);
+
+    // Audio: update playback rate
+    useEffect(() => {
+        const video = audioVideoRef.current;
+        if (video) video.playbackRate = playbackRate;
+    }, [playbackRate]);
+
+    // Audio: drift correction — resync if audio drifts >300ms from canvas
+    useEffect(() => {
+        if (!playing) return undefined;
+        const interval = setInterval(() => {
+            const video = audioVideoRef.current;
+            if (!video || video.paused) return;
+            const expectedTime = frameNumberRef.current / fps;
+            if (Math.abs(video.currentTime - expectedTime) > 0.3) {
+                video.currentTime = expectedTime;
+            }
+        }, 3000);
+        return () => clearInterval(interval);
+    }, [playing, fps]);
+
+    // Spectrogram engine (offline audio decode, separate from playback audio)
     const handleEngineReady = async (engine: any): Promise<void> => {
         setAudioEngine(engine);
     };
@@ -241,6 +306,13 @@ export default function MultiviewWorkspace(): JSX.Element {
         <Layout hasSider className='cvat-multiview-workspace'>
             <ControlsSideBarContainer />
             <Layout.Content className='cvat-multiview-workspace-content'>
+                {/* Hidden audio-only video: plays active view's audio track */}
+                <video
+                    ref={audioVideoRef}
+                    playsInline
+                    preload='auto'
+                    style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none' }}
+                />
                 <div className='multiview-controls'>
                     <span className='playback-rate-label'>Playback Speed:</span>
                     <Select
