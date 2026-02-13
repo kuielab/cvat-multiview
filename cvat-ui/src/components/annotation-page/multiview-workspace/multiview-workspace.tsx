@@ -58,12 +58,6 @@ export default function MultiviewWorkspace(): JSX.Element {
     // Use a ref to track playing state synchronously to avoid race conditions
     // This ref is updated BEFORE starting/stopping playback to prevent seek effect from triggering
     const playingRef = useRef<boolean>(false);
-    // Gate: pause frame dispatch during view transitions to prevent race condition
-    // When view switches during playback, rapid setup() calls overwrite each other's
-    // async chunk fetch results (imageID mismatch). Gate ensures ONE clean fetch completes.
-    const viewTransitionRef = useRef<boolean>(false);
-    const viewTransitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const isInitialViewRef = useRef<boolean>(true);
     // Hidden audio-only video: plays the active view's audio track
     const audioVideoRef = useRef<HTMLVideoElement>(null);
     const audioPrevPlayingRef = useRef<boolean>(false);
@@ -136,33 +130,6 @@ export default function MultiviewWorkspace(): JSX.Element {
 
     // Canvas-only: no HTMLVideoElement syncing.
 
-    // Gate playback dispatch during view transitions
-    // Prevents race condition where rapid setup() calls discard each other's chunk fetches
-    useEffect(() => {
-        if (isInitialViewRef.current) {
-            isInitialViewRef.current = false;
-            return;
-        }
-
-        if (playingRef.current) {
-            viewTransitionRef.current = true;
-
-            // Clear any previous timer
-            if (viewTransitionTimerRef.current) {
-                clearTimeout(viewTransitionTimerRef.current);
-            }
-
-            // Release gate after 800ms — enough for chunk fetch (~200ms) + decode (~150ms) + margin
-            viewTransitionTimerRef.current = setTimeout(() => {
-                viewTransitionRef.current = false;
-                viewTransitionTimerRef.current = null;
-                // Reset clock to current frame to avoid frame jump after gate release
-                clockStartTimeRef.current = performance.now();
-                clockStartFrameRef.current = frameNumberRef.current;
-            }, 800);
-        }
-    }, [activeView]);
-
     // Sync video time to Redux frameNumber when playing
     // Use requestAnimationFrame with throttling to prevent out-of-order async completions
     // B: frame dropping — if previous dispatch is still pending, skip and log
@@ -186,13 +153,6 @@ export default function MultiviewWorkspace(): JSX.Element {
         const THROTTLE_MS = 100;
 
         const updateFrameFromClock = (): void => {
-            // During view transition, skip frame dispatch to prevent race condition
-            // The canvas setup effect will handle the first frame for the new view
-            if (viewTransitionRef.current) {
-                animationId = requestAnimationFrame(updateFrameFromClock);
-                return;
-            }
-
             const now = performance.now();
             if (clockStartTimeRef.current === null || clockStartFrameRef.current === null) {
                 clockStartTimeRef.current = now;
@@ -356,9 +316,6 @@ export default function MultiviewWorkspace(): JSX.Element {
             canvasInstancesRef.current.forEach((instance) => instance.destroy());
             canvasInstancesRef.current.clear();
             clearMultiviewFrameCache();
-            if (viewTransitionTimerRef.current) {
-                clearTimeout(viewTransitionTimerRef.current);
-            }
         };
     }, []);
 
