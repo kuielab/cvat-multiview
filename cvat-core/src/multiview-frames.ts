@@ -186,6 +186,7 @@ export async function getMultiviewFrame(params: {
     if (cachedFrame) {
         // Cache hit: start prefetching upcoming chunks in the background
         maybePrefetchChunks(cache, frameNumber, chunkIndex);
+        console.debug(`[MV] f${frameNumber} cache-hit`);
 
         return {
             renderWidth: meta.frames[0].width,
@@ -198,6 +199,10 @@ export async function getMultiviewFrame(params: {
     cache.latestFrameDecodeRequest = requestId;
 
     return new Promise((resolve, reject) => {
+        // A: per-frame resolve — resolve as soon as requested frame is decoded,
+        // regardless of decodeForward. Prevents blocking until entire chunk completes.
+        let resolved = false;
+
         (cache.activeChunkRequest || Promise.resolve()).finally(() => {
             if (cache.latestFrameDecodeRequest !== requestId) {
                 reject(frameNumber);
@@ -206,6 +211,8 @@ export async function getMultiviewFrame(params: {
 
             const currentFrame = cache.provider.frame(frameNumber);
             if (currentFrame) {
+                resolved = true;
+                console.debug(`[MV] f${frameNumber} cached-after-wait ${Date.now() - requestId}ms`);
                 resolve({
                     renderWidth: meta.frames[0].width,
                     renderHeight: meta.frames[0].height,
@@ -215,7 +222,9 @@ export async function getMultiviewFrame(params: {
             }
 
             cache.activeChunkRequest = new Promise<void>((resolveLoad) => {
+                const fetchStart = Date.now();
                 cache.getChunk(chunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+                    const fetchTime = Date.now() - fetchStart;
                     try {
                         cache.provider.requestDecodeBlock(
                             chunk,
@@ -225,10 +234,14 @@ export async function getMultiviewFrame(params: {
                                 (chunkIndex + 1) * cache.chunkSize,
                             ),
                             (_frame: number, bitmap: ImageBitmap | Blob) => {
-                                if (cache.decodeForward) {
-                                    return;
-                                }
+                                // Resolve immediately when requested frame is decoded
+                                if (resolved) return;
                                 if (cache.latestFrameDecodeRequest === requestId && _frame === frameNumber) {
+                                    resolved = true;
+                                    console.debug(
+                                        `[MV] f${frameNumber} per-frame ${Date.now() - requestId}ms ` +
+                                        `(fetch=${fetchTime}ms) chunk#${chunkIndex}`,
+                                    );
                                     resolve({
                                         renderWidth: meta.frames[0].width,
                                         renderHeight: meta.frames[0].height,
@@ -239,14 +252,21 @@ export async function getMultiviewFrame(params: {
                             () => {
                                 cache.activeChunkRequest = null;
                                 resolveLoad();
+                                // Fallback: if per-frame callback didn't fire for this frame
+                                if (resolved) return;
                                 const decodedFrame = cache.provider.frame(frameNumber);
-                                if (cache.decodeForward) {
+                                if (decodedFrame) {
+                                    resolved = true;
+                                    console.debug(
+                                        `[MV] f${frameNumber} block-done ${Date.now() - requestId}ms ` +
+                                        `(fetch=${fetchTime}ms) chunk#${chunkIndex}`,
+                                    );
                                     resolve({
                                         renderWidth: meta.frames[0].width,
                                         renderHeight: meta.frames[0].height,
                                         imageData: decodedFrame,
                                     });
-                                } else if (!decodedFrame) {
+                                } else {
                                     reject(frameNumber);
                                 }
                             },
