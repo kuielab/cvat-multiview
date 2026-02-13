@@ -6,6 +6,7 @@
 scripts/
 ├── README.md
 ├── SHORTCUTS.md
+├── run/                   # Docker 실행/재시작 스크립트
 ├── init/                  # Pre-annotation 삽입 스크립트
 ├── test/                  # 테스트 Task 생성 및 검증 스크립트
 ├── backup/                # 백업 관련
@@ -14,6 +15,25 @@ scripts/
     ├── migrate_v1.sh      # Shell wrapper (Docker 컨테이너에서 batch 실행)
     └── migrate_v1.py      # 핵심 로직 (batch + 단일 job 모드)
 ```
+
+---
+
+## run/
+
+Docker 실행/재시작 스크립트. `CVAT_HOST` 환경변수 또는 인자로 호스트 지정.
+
+```bash
+# UI 변경 후 재시작 (가장 자주 사용)
+bash scripts/run/build-ui.sh 3.36.160.76
+
+# 코드 변경 없이 재시작
+bash scripts/run/restart.sh 3.36.160.76
+
+# 전체 중지
+bash scripts/run/stop.sh
+```
+
+상세 문서: [`run/README.md`](run/README.md)
 
 ---
 
