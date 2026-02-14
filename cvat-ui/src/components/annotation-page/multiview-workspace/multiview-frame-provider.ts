@@ -17,7 +17,6 @@ export async function fetchMultiviewFrameImage(params: {
     viewId: number;
     frameNumber: number;
     jobStartFrame: number;
-    isPlaying: boolean;
     step: number;
 }): Promise<MultiviewFrameResult> {
     const {
@@ -25,7 +24,6 @@ export async function fetchMultiviewFrameImage(params: {
         viewId,
         frameNumber,
         jobStartFrame,
-        isPlaying,
         step,
     } = params;
 
@@ -34,7 +32,7 @@ export async function fetchMultiviewFrameImage(params: {
         viewId,
         frameNumber,
         jobStartFrame,
-        isPlaying,
+        isPlaying: false,
         step,
     });
 }

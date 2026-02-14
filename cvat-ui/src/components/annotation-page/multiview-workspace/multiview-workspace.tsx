@@ -71,9 +71,6 @@ export default function MultiviewWorkspace(): JSX.Element {
     const activeControl = useSelector((state: CombinedState) => state.annotation.canvas.activeControl);
     const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
 
-    // Track previous activeControl to detect transitions into draw mode
-    const prevActiveControlRef = useRef<ActiveControl>(activeControl);
-
     // Get FPS from multiview data, fallback to 30
     const fps = multiviewData?.videos?.view1?.fps || 30;
 
@@ -86,8 +83,6 @@ export default function MultiviewWorkspace(): JSX.Element {
     useEffect(() => {
         frameNumberRef.current = frameNumber;
     }, [frameNumber]);
-
-    // Canvas-only: no HTMLVideoElement refs or sync required.
 
     // Handle play/pause state changes - synchronized playback
     // Only depends on `playing` to avoid unnecessary re-runs
@@ -121,12 +116,7 @@ export default function MultiviewWorkspace(): JSX.Element {
             // Also update Redux state to stay in sync
             dispatch(switchPlay(false));
         }
-
-        // Update ref for next comparison
-        prevActiveControlRef.current = activeControl;
     }, [activeControl, playing, dispatch]);
-
-    // Canvas-only: no HTMLVideoElement syncing.
 
     // Sync video time to Redux frameNumber when playing
     // Use requestAnimationFrame with throttling to prevent out-of-order async completions
@@ -142,11 +132,6 @@ export default function MultiviewWorkspace(): JSX.Element {
         let lastDispatchTime = 0;
         let pendingDispatch = false;
 
-        // B: playback performance stats
-        let dispatchedCount = 0;
-        let droppedCount = 0;
-        let statsStartTime = performance.now();
-
         // Throttle interval: dispatch at most every 100ms (10fps for Redux updates)
         const THROTTLE_MS = 100;
 
@@ -159,19 +144,11 @@ export default function MultiviewWorkspace(): JSX.Element {
             const elapsed = (now - clockStartTimeRef.current) / 1000;
             const newFrame = Math.round(clockStartFrameRef.current + elapsed * fps * playbackRate);
 
-            const wantToDispatch = newFrame !== lastDispatchedFrame &&
+            const shouldDispatch = newFrame !== lastDispatchedFrame &&
                 (now - lastDispatchTime) >= THROTTLE_MS &&
-                job;
-
-            // B: count dropped frames (wanted to dispatch but previous still pending)
-            if (wantToDispatch && pendingDispatch) {
-                droppedCount++;
-            }
-
-            const shouldDispatch = wantToDispatch && !pendingDispatch;
+                job && !pendingDispatch;
 
             if (shouldDispatch) {
-                dispatchedCount++;
                 lastDispatchedFrame = newFrame;
                 lastFrameRef.current = newFrame;
                 lastDispatchTime = now;
@@ -181,20 +158,6 @@ export default function MultiviewWorkspace(): JSX.Element {
                 Promise.resolve(dispatch(changeFrameAsync(targetFrame))).finally(() => {
                     pendingDispatch = false;
                 });
-            }
-
-            // B: log playback stats every 3 seconds
-            const statsElapsed = now - statsStartTime;
-            if (statsElapsed >= 3000 && (dispatchedCount + droppedCount) > 0) {
-                const sec = statsElapsed / 1000;
-                console.log(
-                    `[MV-Playback] ${sec.toFixed(1)}s: ` +
-                    `dispatched=${dispatchedCount} (${(dispatchedCount / sec).toFixed(1)}fps) ` +
-                    `dropped=${droppedCount}`,
-                );
-                dispatchedCount = 0;
-                droppedCount = 0;
-                statsStartTime = now;
             }
 
             animationId = requestAnimationFrame(updateFrameFromClock);

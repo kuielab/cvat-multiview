@@ -14,8 +14,10 @@ test.describe('9/10. Canvas-Only Rendering', () => {
             document.querySelectorAll('.cvat-multiview-workspace video').length,
         );
         console.log(`HTMLVideoElement count in workspace: ${videoCount}`);
-        // Active view uses canvas, preview views use <video> elements (4 previews for 5 views)
-        expect(videoCount).toBe(4);
+        // Hybrid rendering: all views (active + inactive) render <video> elements.
+        // Active view also has a canvas overlay on top for annotation interaction.
+        // With 5 views + 1 hidden audio video = 6 total video elements.
+        expect(videoCount).toBe(6);
 
         // Verify canvas backgrounds exist for active view
         const canvasBgCount = await page.evaluate(() =>

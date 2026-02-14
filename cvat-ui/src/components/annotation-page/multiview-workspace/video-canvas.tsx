@@ -46,8 +46,6 @@ export default function VideoCanvas(props: Props): JSX.Element {
         }
     }, [isActive, onCanvasContainerReady]);
 
-    // No HTMLVideoElement rendering in canvas-only mode.
-
     /**
      * Pan support when zoomed in.
      * - Middle button (1), Right button (2), Alt+Left (0): pan when zoomed
@@ -130,8 +128,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
     // ALL video control (play/pause/seek) is handled by parent component
     // This component only renders the video element
 
-    // Calculate inline styles for canvas overlay.
-    // In canvas render mode (active view), use full container size to avoid letterboxing logic.
+    // Canvas overlay fills the full container. Video is always rendered underneath.
     const canvasOverlayStyle: React.CSSProperties = {
         position: 'absolute',
         left: 0,
@@ -140,8 +137,7 @@ export default function VideoCanvas(props: Props): JSX.Element {
         height: '100%',
     };
 
-    // CSS transform for zoom: translate then scale from origin (0,0).
-    // Disabled in canvas render mode (canvas handles zoom/pan directly).
+    // Zoom wrapper: contains video + canvas overlay layers.
     const zoomWrapperStyle: React.CSSProperties = {
         width: '100%',
         height: '100%',

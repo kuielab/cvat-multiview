@@ -146,8 +146,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     const prevContainerSizeRef = useRef<{ width: number; height: number } | null>(null);
 
-    // Canvas-only mode: frame dimensions come directly from metadata.
-
     // Redux state selectors
     const canvasInstance = useSelector((state: CombinedState) => state.annotation.canvas.instance) as Canvas | null;
     const jobInstance = useSelector((state: CombinedState) => state.annotation.job.instance);
@@ -180,7 +178,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
         renderWidth: number,
         renderHeight: number,
         jobStartFrame: number,
-        isPlaying: boolean,
         step: number,
     ) => {
         const proxy = new Proxy(baseFrameData, {
@@ -200,7 +197,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
                                     viewId,
                                     frameNumber: target.number,
                                     jobStartFrame,
-                                    isPlaying,
                                     step,
                                 });
                             } catch (error) {
@@ -922,7 +918,6 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             width,
             height,
             jobStartFrame,
-            playing,
             step,
         );
 
