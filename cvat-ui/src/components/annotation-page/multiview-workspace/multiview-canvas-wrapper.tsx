@@ -609,8 +609,8 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
     const onKeyDown = useCallback((event: KeyboardEvent): void => {
         const refs = stateRefs.current;
 
-        // Only handle Delete key
-        if (event.key !== 'Delete') return;
+        // Handle Delete key (Windows/Linux) and Backspace key (Mac ⌫)
+        if (event.key !== 'Delete' && event.key !== 'Backspace') return;
 
         // Prevent if in draw mode or other active operations
         if (isCanvasInDrawMode(canvasInstance)) return;

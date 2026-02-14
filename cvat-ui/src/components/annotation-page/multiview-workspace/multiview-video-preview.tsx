@@ -31,6 +31,9 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
     const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const frameNumberRef = useRef<number>(0);
     const playingRef = useRef<boolean>(false);
+    // Tracks whether video reached the end and is in recovery (seeking near-end).
+    // Prevents handleCanPlay from restarting playback after onEnded seek.
+    const endedRecoveryRef = useRef<boolean>(false);
 
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
@@ -100,12 +103,34 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
         readyRef.current = true;
         retryCountRef.current = 0;
 
+        // If this canplay fired after onEnded recovery seek, don't restart playback
+        if (endedRecoveryRef.current) {
+            endedRecoveryRef.current = false;
+            return;
+        }
+
         video.currentTime = frameNumberRef.current / fps;
         if (playingRef.current) {
             video.playbackRate = playbackRate;
             video.play().catch(() => { /* autoplay policy */ });
         }
     }, [fps, playbackRate]);
+
+    // Handle video ended: seek to near-end and pause to show last frame.
+    // When <video> reaches the end (ended=true), it shows black.
+    // The active canvas (chunk-based) stops at stopFrame, but preview videos
+    // free-run past that point and hit duration. We seek to just before the end
+    // to clear the ended state and show the last visible frame. We do NOT restart
+    // playback because the video would immediately reach the end again.
+    const handleVideoEnded = useCallback(() => {
+        const video = videoRef.current;
+        if (!video || !video.duration) return;
+
+        // Set recovery flag to prevent handleCanPlay from restarting playback
+        endedRecoveryRef.current = true;
+        // Seek to just before the end — clears ended state, shows last frame
+        video.currentTime = Math.max(0, video.duration - 0.1);
+    }, []);
 
     // Cleanup retry timer on unmount
     useEffect(() => () => {
@@ -127,6 +152,8 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
 
         if (playing && !wasPlaying) {
             // Starting playback: seek to current frame, set rate, then play
+            // Clear ended recovery state and seek before playing
+            endedRecoveryRef.current = false;
             video.currentTime = frameNumber / fps;
             video.playbackRate = playbackRate;
             video.play().catch(() => {
@@ -160,6 +187,7 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
                 playsInline
                 preload='auto'
                 onCanPlay={handleCanPlay}
+                onEnded={handleVideoEnded}
                 onError={handleVideoError}
             />
             {viewAnnotations.length > 0 && (
