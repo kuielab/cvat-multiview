@@ -124,6 +124,11 @@
                 justify-content: center;
             }
 
+            .playback-hidden {
+                visibility: hidden;
+                pointer-events: none;
+            }
+
             .annotation-canvas-overlay {
                 // Position is set dynamically via inline styles
                 // to match the video display area (accounting for object-fit: contain)

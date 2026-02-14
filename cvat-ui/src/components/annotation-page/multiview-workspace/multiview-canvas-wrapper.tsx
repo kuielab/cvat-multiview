@@ -859,6 +859,9 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
 
     // Track previous viewId for canvas setup effect (separate from prevViewIdRef used elsewhere)
     const prevSetupViewIdRef = useRef<number | null>(null);
+    // Track previous playing state to detect play→pause transitions (justPaused).
+    // Initialized from current Redux state to avoid false justPaused on mount.
+    const prevPlayingRef = useRef<boolean>(playing);
 
     /**
      * Setup canvas with frame data when frame or annotations change
@@ -878,9 +881,22 @@ export default function MultiviewCanvasWrapper(props: Props): JSX.Element | null
             }
         }
 
-        // Skip setup if canvas is in draw mode or draw operation is requested
-        // This preserves active drawing state - canvas will be updated when drawing completes
-        if (shouldPreserveDrawState(canvasInstance, activeControl)) {
+        // ========== Hybrid rendering: playback/pause state handling ==========
+
+        // justPaused: play→pause transition detected (playing was true last render, now false)
+        const justPaused = prevPlayingRef.current && !playing;
+        prevPlayingRef.current = playing;
+
+        // During playback: skip setup — active view uses <video> for rendering
+        if (playing) {
+            prevSetupViewIdRef.current = activeViewId;
+            return;
+        }
+
+        // Preserve draw state — but NOT when justPaused (need to render current frame on canvas)
+        // justPaused=true: play→draw mode entry→auto-pause → canvas needs current frame
+        // justPaused=false: normal draw mode → skip setup to preserve draw state
+        if (shouldPreserveDrawState(canvasInstance, activeControl) && !justPaused) {
             return;
         }
 

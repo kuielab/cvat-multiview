@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 import React, { useRef, useEffect, useCallback } from 'react';
+import { useSelector } from 'react-redux';
+import { CombinedState } from 'reducers';
 import MultiviewVideoPreview from './multiview-video-preview';
 
 interface Props {
@@ -19,6 +21,8 @@ export default function VideoCanvas(props: Props): JSX.Element {
         viewId, isActive, playbackRate,
         onCanvasContainerReady, onPan, onZoomReset,
     } = props;
+
+    const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
 
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -126,8 +130,6 @@ export default function VideoCanvas(props: Props): JSX.Element {
     // ALL video control (play/pause/seek) is handled by parent component
     // This component only renders the video element
 
-    const showPreview = !isActive;
-
     // Calculate inline styles for canvas overlay.
     // In canvas render mode (active view), use full container size to avoid letterboxing logic.
     const canvasOverlayStyle: React.CSSProperties = {
@@ -152,17 +154,15 @@ export default function VideoCanvas(props: Props): JSX.Element {
     return (
         <div ref={containerRef} className='video-canvas-container' onDoubleClick={handleDoubleClick}>
             <div className='zoom-wrapper' style={zoomWrapperStyle}>
+                {/* Video is ALWAYS rendered to avoid remount blink on view switch.
+                    When active+paused, canvas overlay covers the video (higher z-index).
+                    When active+playing, canvas is hidden and video shows through. */}
+                <MultiviewVideoPreview viewId={viewId} playbackRate={playbackRate} />
                 {isActive && (
                     <div
                         ref={canvasContainerCallbackRef}
-                        className='annotation-canvas-overlay active-canvas'
+                        className={`annotation-canvas-overlay active-canvas ${playing ? 'playback-hidden' : ''}`}
                         style={canvasOverlayStyle}
-                    />
-                )}
-                {showPreview && (
-                    <MultiviewVideoPreview
-                        viewId={viewId}
-                        playbackRate={playbackRate}
                     />
                 )}
             </div>

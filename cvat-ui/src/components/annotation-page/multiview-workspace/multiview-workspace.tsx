@@ -109,15 +109,13 @@ export default function MultiviewWorkspace(): JSX.Element {
         };
     }, [playing]);
 
-    // Auto-pause video when ENTERING draw mode (not when already in draw mode)
-    // This provides better UX - user can't draw while video is playing anyway
+    // Auto-pause video when in draw mode — prevents playback during any draw operation.
+    // Covers: entering draw mode while playing, pressing Space while in draw mode,
+    // and any external API call that triggers play while draw mode is active.
     useEffect(() => {
-        const prevControl = prevActiveControlRef.current;
-        const wasInDrawMode = DRAW_ACTIVE_CONTROLS.includes(prevControl);
         const isInDrawMode = DRAW_ACTIVE_CONTROLS.includes(activeControl);
 
-        // Only pause when transitioning INTO draw mode, not when already in it
-        if (playing && !wasInDrawMode && isInDrawMode) {
+        if (playing && isInDrawMode && playingRef.current) {
             // Update playingRef FIRST to prevent seek effect from triggering
             playingRef.current = false;
             // Also update Redux state to stay in sync
