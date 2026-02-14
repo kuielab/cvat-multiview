@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import { CombinedState, Workspace } from 'reducers';
 import { ObjectState, ObjectType } from 'cvat-core-wrapper';
@@ -12,6 +12,9 @@ interface Props {
     viewId: number;
     playbackRate: number;
 }
+
+const MAX_RETRY_COUNT = 3;
+const RETRY_DELAY_MS = 1000;
 
 /**
  * Preview component that renders inactive views using a native HTML <video> element
@@ -23,6 +26,11 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
     const { viewId, playbackRate } = props;
     const videoRef = useRef<HTMLVideoElement>(null);
     const prevPlayingRef = useRef<boolean>(false);
+    const readyRef = useRef<boolean>(false);
+    const retryCountRef = useRef<number>(0);
+    const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const frameNumberRef = useRef<number>(0);
+    const playingRef = useRef<boolean>(false);
 
     const frameNumber = useSelector((state: CombinedState) => state.annotation.player.frame.number);
     const playing = useSelector((state: CombinedState) => state.annotation.player.playing);
@@ -35,6 +43,10 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
     const videoUrl = multiviewData?.videos?.[viewKey]?.url || '';
     const videoWidth = multiviewData?.videos?.[viewKey]?.width || 320;
     const videoHeight = multiviewData?.videos?.[viewKey]?.height || 240;
+
+    // Keep refs in sync for use in event handlers
+    useEffect(() => { frameNumberRef.current = frameNumber; }, [frameNumber]);
+    useEffect(() => { playingRef.current = playing; }, [playing]);
 
     // Filter annotations for this specific view's bbox overlay
     const viewAnnotations = useMemo(() => {
@@ -57,6 +69,51 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
         ));
     }, [annotations, frameNumber, workspace, viewId]);
 
+    // Reload video source to recover from errors
+    const reloadVideo = useCallback(() => {
+        const video = videoRef.current;
+        if (!video || !videoUrl) return;
+
+        readyRef.current = false;
+        video.src = videoUrl;
+        video.load();
+    }, [videoUrl]);
+
+    // Handle video error: retry loading up to MAX_RETRY_COUNT times
+    const handleVideoError = useCallback(() => {
+        if (retryCountRef.current >= MAX_RETRY_COUNT) return;
+
+        retryCountRef.current += 1;
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+
+        retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            reloadVideo();
+        }, RETRY_DELAY_MS);
+    }, [reloadVideo]);
+
+    // When video becomes ready after load/reload, sync to current state
+    const handleCanPlay = useCallback(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        readyRef.current = true;
+        retryCountRef.current = 0;
+
+        video.currentTime = frameNumberRef.current / fps;
+        if (playingRef.current) {
+            video.playbackRate = playbackRate;
+            video.play().catch(() => { /* autoplay policy */ });
+        }
+    }, [fps, playbackRate]);
+
+    // Cleanup retry timer on unmount
+    useEffect(() => () => {
+        if (retryTimerRef.current) {
+            clearTimeout(retryTimerRef.current);
+        }
+    }, []);
+
     // Sync playback state: play/pause and seek
     useEffect(() => {
         const video = videoRef.current;
@@ -64,6 +121,9 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
 
         const wasPlaying = prevPlayingRef.current;
         prevPlayingRef.current = playing;
+
+        // Wait for video to be ready before controlling playback
+        if (!readyRef.current) return;
 
         if (playing && !wasPlaying) {
             // Starting playback: seek to current frame, set rate, then play
@@ -99,6 +159,8 @@ export default function MultiviewVideoPreview(props: Props): JSX.Element {
                 muted
                 playsInline
                 preload='auto'
+                onCanPlay={handleCanPlay}
+                onError={handleVideoError}
             />
             {viewAnnotations.length > 0 && (
                 <svg
