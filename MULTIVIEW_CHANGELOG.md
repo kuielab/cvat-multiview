@@ -540,3 +540,129 @@ Broadway.js 디코더에는 두 가지 디코딩 모드가 있다:
 | 커밋 | 설명 |
 |------|------|
 | `9323c4d` | active view 재생/탐색 성능 최적화 |
+
+---
+
+## 2026-02-13: Active View 오디오 재생 복원
+
+Canvas-Only 리팩토링 이후 끊겼던 오디오 재생을 복원.
+
+### 구현
+
+- 숨겨진 `<video>` 요소로 active view의 오디오를 재생
+- 뷰 전환 시 해당 뷰의 오디오로 자동 교체
+- 3초 주기 드리프트 보정으로 영상-음성 싱크 유지
+
+### 커밋
+
+| 커밋 | 설명 |
+|------|------|
+| `2ad3845` | active view 오디오 재생 기능 추가 |
+
+---
+
+## 2026-02-13: 재생 성능 개선 (per-frame resolve, 뷰 전환 안정화)
+
+### Per-frame chunk resolve (`361b157`)
+
+재생 중 chunk 전체 디코드 완료를 기다리지 않고, 요청한 프레임이 디코드되는 즉시 resolve.
+`decodeForward` 조건 제거, `resolved` 플래그로 중복 resolve 방지.
+측정 결과: seek 레이턴시 avg 232ms (fetch 89ms + decode 143ms).
+
+### 재생 중 뷰 전환 첫 프레임 수정 (`f1cfcd8`)
+
+재생 중 뷰 전환 시 재생 루프가 100ms마다 새 프레임을 dispatch하여 각 `setup()`의 비동기
+chunk fetch 결과가 imageID 불일치로 폐기되는 race condition 발생.
+`viewTransitionRef` 게이트로 뷰 전환 시 800ms간 frame dispatch 차단.
+
+### 뷰 전환 게이트 제거 (`d057832`)
+
+800ms 게이트가 canvas freeze와 ~800ms sync desync를 유발. per-frame chunk resolve가
+`setup()` race condition을 자연스럽게 해결하므로 게이트 제거.
+
+### 커밋
+
+| 커밋 | 설명 |
+|------|------|
+| `361b157` | per-frame chunk resolve로 디코딩 레이턴시 감소 |
+| `f1cfcd8` | 재생 중 뷰 전환 시 첫 프레임 표시 문제 수정 |
+| `d057832` | view transition gate 제거 (freeze/desync 유발) |
+
+---
+
+## 2026-02-14: Hybrid Rendering — `<video>` + Canvas 이중 렌더링
+
+Active 뷰에 `<video>`와 Canvas를 동시에 렌더링하는 하이브리드 방식 도입.
+재생 중에는 Canvas를 숨기고 네이티브 `<video>`로 렌더링 (HW 가속, Broadway.js freeze 제거).
+정지 시 Canvas 오버레이를 표시하여 어노테이션 인터랙션.
+
+### 주요 변경
+
+- **`video-canvas.tsx`**: 항상 `MultiviewVideoPreview`를 렌더링 (뷰 전환 시 remount blink 방지). CSS로 Canvas 가시성 토글
+- **`multiview-canvas-wrapper.tsx`**: 재생 중 `setup()` 스킵. `justPaused` 플래그로 play→pause 전환 시 강제 setup
+- **`multiview-workspace.tsx`**: Draw 모드 auto-pause 강화 (모든 draw 시나리오에서 재생 차단)
+- **`multiview-video-preview.tsx`**: `onError` 핸들러 (최대 3회 자동 재시도), `onCanPlay` 가드, `ended` 이벤트에서 near-end seek
+- **Mac 지원**: `Backspace` (Mac ⌫) 키도 Delete로 인식
+
+### Dead code 정리 (`ea8a944`)
+
+- `multiview-canvas-preview.tsx` 삭제 (157줄, 미사용)
+- 재생 루프의 `console.log`, 미사용 ref, dead `isPlaying` 파라미터 제거
+- orphaned CSS 블록 제거 (`.annotation-canvas-preview`, `.zoom-indicator`)
+
+### 커밋
+
+| 커밋 | 설명 |
+|------|------|
+| `cfd02a2` | hybrid rendering — `<video>` during playback, Canvas when paused |
+| `58446e3` | preview video error recovery (최대 3회 재시도) |
+| `693290e` | Mac Delete key + video ended black screen 방지 |
+| `ea8a944` | dead code 정리 (hybrid rendering migration) |
+
+---
+
+## 2026-02-15: 재생 Auto-stop, Frame Count 정확도, Warm Cache
+
+### 재생 Auto-stop (`559f04a`)
+
+Multiview rAF 루프에 auto-stop 로직 추가.
+`targetFrame >= job.stopFrame`일 때 `switchPlay(false)` 디스패치 후 rAF 스케줄링 중단.
+기존에는 `stopFrame` 도달 후에도 재생 상태가 유지되어 프레임 카운터가 비디오 끝 이후로 계속 올라갔음.
+
+### Frame count 정확도 (`559f04a`)
+
+`_extract_video_metadata()` 개선:
+- **PyAV 경로**: `video_stream.frames` (정확한 값) 우선, 없으면 `round(duration * fps)` (int 절삭 → 반올림)
+- **ffprobe 경로**: `nb_frames` 스트림 메타데이터 우선, 없으면 `round(duration * fps)`
+- **Fallback**: `frame_count: 3000` → `0`으로 변경 + 호출부에서 `ValueError` raise (잘못된 task 생성 방지)
+
+### FrameDecoder onDecodeAll race condition (`4230426`)
+
+`requestDecodeBlock()`에서 같은 chunk가 재요청될 때 `onDecode`/`onReject`만 교체하고 `onDecodeAll`은
+이전 호출자의 것이 남아있던 버그. Prefetch가 먼저 decode를 시작하면 `getMultiviewFrame`의 `resolveLoad()`가
+영원히 호출되지 않아 `activeChunkRequest`가 hang → active view 영구 freeze.
+
+수정:
+- `requestedChunkToDecode`와 `chunkIsBeingDecoded` 양쪽에서 `onDecodeAll` 콜백을 compose
+- `maybePrefetchChunks`에 `activeChunkRequest !== null` 가드 추가 (defense-in-depth)
+
+### Warm cache API (`4230426`)
+
+재생 중 현재 프레임의 chunk를 백그라운드에서 미리 디코딩하는 `warmCacheForFrame()` API 추가.
+Broadway.js가 Web Worker에서 실행되므로 메인 스레드 차단 없이 디코딩.
+사용자가 일시정지하면 이미 디코딩된 ImageBitmap이 캐시에 있어 즉시 Canvas 렌더링.
+
+### --label-type 옵션 (`926a7f6`)
+
+`insert_bbox_annotations.py`에 `--label-type` 인자 추가.
+CVAT 사이드바에 표시할 드로잉 도구 제어:
+- `rectangle` (기본): Rectangle 도구만
+- `any`: 전체 도구 (Rectangle, Polygon, Polyline, Points, Ellipse, Cuboid, Mask, Skeleton)
+
+### 커밋
+
+| 커밋 | 설명 |
+|------|------|
+| `559f04a` | multiview auto-stop + frame_count 정확도 개선 |
+| `4230426` | FrameDecoder onDecodeAll race fix + warm cache API |
+| `926a7f6` | --label-type 옵션 (사이드바 도구 제어) |

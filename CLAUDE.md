@@ -28,6 +28,8 @@ cvat-ui/src/components/annotation-page/multiview-workspace/
 ├── spectrogram-panel.tsx        # 오디오 스펙트로그램 시각화
 ├── audio-engine.ts              # Web Audio API + FFT 구현
 ├── multiview-objects-list.tsx   # 어노테이션 목록 (뷰별 필터링)
+├── multiview-video-preview.tsx   # Preview 뷰 (<video> 네이티브 재생 + bbox 오버레이)
+├── multiview-frame-provider.ts  # cvat-core multiviewFrames API 브릿지
 ├── types.ts                     # 타입 정의
 └── styles.scss                  # 스타일
 
@@ -69,6 +71,13 @@ class MultiviewData(models.Model):
 
 API: `POST /api/tasks/create_multiview/`
 
+### Hybrid Rendering
+
+- **Active 뷰** (1개): Canvas + Chunk + Broadway.js (프레임 정확, bbox 좌표 일치)
+  - 재생 중: `<video>` 네이티브 렌더링 (HW 가속), Canvas 숨김
+  - 정지 시: Canvas 오버레이 표시 (어노테이션 인터랙션)
+- **Preview 뷰** (나머지): `<video>` 네이티브 재생 + SVG bbox 오버레이
+
 ### 좌표 시스템
 
 - Canvas 공간: 실제 비디오 해상도 (예: 320×240)
@@ -103,6 +112,12 @@ API: `POST /api/tasks/create_multiview/`
 | Multi-class 모드에서 Sound 라벨 잔존 | DELETE `/api/labels/{id}` 사용 | `insert_bbox_annotations.py` |
 | Pre-annotation 편집 시 다른 annotation 영향 | `cloneObjectStateForDisplay()` (non-enumerable 속성 명시적 복사) | `multiview-canvas-wrapper.tsx` |
 | Shape 뷰 경계 드래그 시 축소 | videoElement 실제 치수 우선 + `clampPointsToCanvasBounds()` | `multiview-canvas-wrapper.tsx` |
+| Active view 재생 중 프리즈 (onDecodeAll race) | `requestDecodeBlock` 시 `onDecodeAll` 콜백 합성 (compose) | `cvat-data.ts` |
+| 재생 끝나도 정지 안 됨 | rAF 루프에서 `targetFrame >= stopFrame` 시 `switchPlay(false)` | `multiview-workspace.tsx` |
+| frame_count 추정 오차 (3000 fallback) | PyAV `nb_frames` 우선 + `round()` 반올림 + fallback 0으로 변경 | `views.py` |
+| Mac Delete 키 안 됨 | `Backspace` (Mac ⌫) 키도 삭제로 인식 | `multiview-canvas-wrapper.tsx` |
+| 비디오 끝에서 검은 화면 | `ended` 이벤트에서 near-end로 seek | `multiview-video-preview.tsx` |
+| Preview `<video>` 네트워크 에러 시 검은 화면 | `onError` 핸들러에서 최대 3회 자동 재시도 | `multiview-video-preview.tsx` |
 
 ---
 
@@ -159,6 +174,17 @@ docker compose logs -f cvat_ui
 ```bash
 cd cvat-ui && npm run build
 ```
+
+`scripts/run/` 편의 스크립트:
+
+| 스크립트 | 설명 |
+|---------|------|
+| `build-ui.sh` | UI/TS 변경 후 재시작 |
+| `build-server.sh` | Python 변경 후 재시작 |
+| `build-all.sh` | 전체 빌드 |
+| `restart.sh` | 코드 변경 없이 재시작 |
+| `pull-and-run.sh` | ghcr.io 이미지 pull 후 실행 |
+| `stop.sh` | 전체 중지 |
 
 ---
 
@@ -242,6 +268,7 @@ python scripts/init/insert_bbox_annotations.py \
 | `--split` | `test`/`train`/`all` | 데이터 분할 선택 |
 | `--divisions` | `2`/`3`/`5` | 구간 분할 수 (기본: 3) |
 | `--bbox-size` | `300` (기본) | Bbox 크기 (px) |
+| `--label-type` | `rectangle`/`any`/`polygon`/... | 사이드바 도구 제어 (기본: rectangle) |
 
 ---
 
