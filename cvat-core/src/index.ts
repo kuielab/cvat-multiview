@@ -184,6 +184,7 @@ export default interface CVATCore {
             step: number;
         }) => Promise<{ renderWidth: number; renderHeight: number; imageData: ImageBitmap | Blob }>;
         clearCache: (taskId?: number, viewId?: number) => void;
+        warmCache: (params: { taskId: number; viewId: number; frameNumber: number; jobStartFrame: number }) => void;
     };
     requests: {
         list: () => Promise<PaginatedResource<Request>>;

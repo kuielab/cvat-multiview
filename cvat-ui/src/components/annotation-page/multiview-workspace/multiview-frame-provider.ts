@@ -40,3 +40,16 @@ export async function fetchMultiviewFrameImage(params: {
 export function clearMultiviewFrameCache(taskId?: number, viewId?: number): void {
     cvat.multiviewFrames.clearCache(taskId, viewId);
 }
+
+/**
+ * Pre-decode the chunk for the given frame in the background (fire-and-forget).
+ * Call during playback so the decoded ImageBitmap is ready when the user pauses.
+ */
+export function warmMultiviewFrameCache(params: {
+    taskId: number;
+    viewId: number;
+    frameNumber: number;
+    jobStartFrame: number;
+}): void {
+    cvat.multiviewFrames.warmCache(params);
+}

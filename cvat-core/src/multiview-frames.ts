@@ -86,6 +86,12 @@ function maybePrefetchChunks(
 
         // Fire-and-forget: fetch chunk from server and decode in background
         cache.getChunk(targetChunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+            // Guard: if getMultiviewFrame started a decode while HTTP was in-flight, bail out
+            // to avoid requestDecodeBlock callback conflicts
+            if (cache.activeChunkRequest !== null) {
+                cache.prefetchingChunkIndex = null;
+                return;
+            }
             cache.provider.requestDecodeBlock(
                 chunk,
                 targetChunkIndex,
@@ -292,16 +298,99 @@ export async function getMultiviewFrame(params: {
     });
 }
 
+/**
+ * Track which chunk is being warmed per view (prevents duplicate warm requests).
+ * null = idle, number = chunk index being fetched+decoded.
+ */
+const warmingChunks: Record<CacheKey, number | null> = {};
+
+/**
+ * Pre-decode the chunk containing `frameNumber` in the background during playback.
+ * Broadway.js runs in a Web Worker, so this does NOT block the main thread.
+ * When the user pauses, getMultiviewFrame() will find the frame already cached
+ * and return instantly — eliminating the freeze.
+ *
+ * Fire-and-forget: returns synchronously, decode happens in background.
+ */
+export function warmCacheForFrame(params: {
+    taskId: number;
+    viewId: number;
+    frameNumber: number;
+    jobStartFrame: number;
+}): void {
+    const {
+        taskId, viewId, frameNumber, jobStartFrame,
+    } = params;
+    const key = makeKey(taskId, viewId);
+    const cache = multiviewFrameDataCache[key];
+
+    // Skip if cache not initialized (first canvas setup() will handle it)
+    if (!cache) return;
+
+    // Already decoded — nothing to do
+    if (cache.provider.frame(frameNumber) !== null) return;
+
+    // Already warming a chunk for this view — avoid duplicate requests
+    if (key in warmingChunks && warmingChunks[key] !== null) return;
+
+    // Skip if getMultiviewFrame() is actively decoding — avoid FrameDecoder
+    // requestDecodeBlock callback replacement race condition
+    if (cache.activeChunkRequest !== null) return;
+
+    // Async chain: resolve meta → compute chunk → fetch → decode (all background)
+    cache.getMeta().then((meta) => {
+        const dataFrameNumber = meta.getDataFrameNumber(frameNumber - jobStartFrame);
+        const chunkIndex = meta.getFrameChunkIndex(dataFrameNumber);
+
+        // Double-check after async: frame might have been decoded while awaiting meta
+        if (cache.provider.frame(frameNumber) !== null) return;
+
+        // Skip if getMultiviewFrame started a decode while we awaited meta
+        if (cache.activeChunkRequest !== null) return;
+
+        // Skip if maybePrefetchChunks is already fetching this chunk
+        if (cache.prefetchingChunkIndex === chunkIndex) return;
+
+        warmingChunks[key] = chunkIndex;
+        cache.provider.setRenderSize(meta.frames[0].width, meta.frames[0].height);
+
+        cache.getChunk(chunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+            // Final guard: if getMultiviewFrame started between fetch and decode, bail out
+            if (cache.activeChunkRequest !== null) {
+                warmingChunks[key] = null;
+                return;
+            }
+            cache.provider.requestDecodeBlock(
+                chunk,
+                chunkIndex,
+                cache.segmentFrameNumbers.slice(
+                    chunkIndex * cache.chunkSize,
+                    (chunkIndex + 1) * cache.chunkSize,
+                ),
+                () => { /* per-frame decode callback — no-op for background warm */ },
+                () => { warmingChunks[key] = null; },
+                (_error: Error) => { warmingChunks[key] = null; },
+            );
+        }).catch(() => {
+            warmingChunks[key] = null;
+        });
+    }).catch((error) => {
+        console.debug('[MV] warmCache: meta fetch failed, will retry:', error?.message || error);
+    });
+}
+
 export function clearMultiviewFramesCache(taskId?: number, viewId?: number): void {
     if (typeof taskId === 'number' && typeof viewId === 'number') {
         const key = makeKey(taskId, viewId);
         delete multiviewFrameMetaCache[key];
         delete multiviewFrameDataCache[key];
+        delete warmingChunks[key];
         return;
     }
 
     Object.keys(multiviewFrameMetaCache).forEach((key) => delete multiviewFrameMetaCache[key]);
     Object.keys(multiviewFrameDataCache).forEach((key) => delete multiviewFrameDataCache[key]);
+    Object.keys(warmingChunks).forEach((key) => delete warmingChunks[key]);
 }
 
 export function getMultiviewSegmentFrameNumbers(

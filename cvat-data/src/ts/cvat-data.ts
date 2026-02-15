@@ -191,6 +191,12 @@ export class FrameDecoder {
 
                 this.requestedChunkToDecode.onDecode = onDecode;
                 this.requestedChunkToDecode.onReject = onReject;
+                // Compose onDecodeAll: both old and new callers' cleanup must run
+                const prevOnDecodeAll = this.requestedChunkToDecode.onDecodeAll;
+                this.requestedChunkToDecode.onDecodeAll = () => {
+                    prevOnDecodeAll();
+                    onDecodeAll();
+                };
             } else if (this.requestedChunkToDecode.onReject) {
                 // it was other chunk
                 this.requestedChunkToDecode.onReject(new RequestOutdatedError());
@@ -214,6 +220,15 @@ export class FrameDecoder {
 
             this.chunkIsBeingDecoded.onReject = onReject;
             this.chunkIsBeingDecoded.onDecode = onDecode;
+            // Compose onDecodeAll: both old and new callers' cleanup must run.
+            // Without this, the new caller's resolveLoad() never fires when
+            // prefetch/warm started the decode first, causing activeChunkRequest
+            // to hang forever and permanently freezing the active view.
+            const prevOnDecodeAll = this.chunkIsBeingDecoded.onDecodeAll;
+            this.chunkIsBeingDecoded.onDecodeAll = () => {
+                prevOnDecodeAll();
+                onDecodeAll();
+            };
         }
 
         this.startDecode();

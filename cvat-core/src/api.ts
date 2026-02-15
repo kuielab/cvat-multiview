@@ -17,7 +17,7 @@ import implementProject from './project-implementation';
 import { Attribute, Label } from './labels';
 import MLModel from './ml-model';
 import { FrameData, FramesMetaData } from './frames';
-import { getMultiviewFrame, getMultiviewFramesMeta, clearMultiviewFramesCache } from './multiview-frames';
+import { getMultiviewFrame, getMultiviewFramesMeta, clearMultiviewFramesCache, warmCacheForFrame } from './multiview-frames';
 import CloudStorage from './cloud-storage';
 import Organization from './organization';
 import Webhook from './webhook';
@@ -185,6 +185,9 @@ function build(): CVATCore {
             },
             clearCache(taskId?: number, viewId?: number) {
                 clearMultiviewFramesCache(taskId, viewId);
+            },
+            warmCache(params: { taskId: number; viewId: number; frameNumber: number; jobStartFrame: number }) {
+                warmCacheForFrame(params);
             },
         },
         users: {
