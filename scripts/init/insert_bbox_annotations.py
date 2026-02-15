@@ -64,7 +64,11 @@ DEFAULT_DIVISIONS = 3
 DEFAULT_VIEW_COUNT = 5
 DEFAULT_DATASETS = ["multisensor_home1", "multisensor_home2", "mmoffice"]
 DEFAULT_LABEL_NAME = "Sound"
+DEFAULT_LABEL_TYPE = "rectangle"  # CVAT label type: controls sidebar drawing tools
 DEFAULT_SPLIT = "all"  # "test", "train", "all"
+
+# Valid CVAT label types
+VALID_LABEL_TYPES = ["rectangle", "any", "polygon", "polyline", "points", "ellipse", "cuboid", "mask", "skeleton"]
 
 # Split to JSON file mapping for multisensor datasets
 SPLIT_JSON_FILES = {
@@ -496,7 +500,8 @@ def ensure_labels_exist(
     session: requests.Session,
     task_id: int,
     label_names: Set[str],
-    org: Optional[str] = None
+    org: Optional[str] = None,
+    label_type: str = DEFAULT_LABEL_TYPE,
 ) -> Dict[str, int]:
     """
     Ensure all required labels exist on the task, creating any that are missing.
@@ -507,6 +512,9 @@ def ensure_labels_exist(
         task_id: Task ID to check/update
         label_names: Set of label names that must exist
         org: Organization slug
+        label_type: CVAT label type that controls sidebar drawing tools.
+                    "rectangle" (default) shows only Rectangle tool.
+                    "any" shows all drawing tools (Rectangle, Polygon, Polyline, etc.)
 
     Returns:
         Dict mapping label names to their IDs
@@ -544,7 +552,7 @@ def ensure_labels_exist(
     if missing:
         print(f"      Creating {len(missing)} new labels: {', '.join(sorted(missing))}")
         new_labels = [
-            {"name": name, "type": "rectangle", "attributes": []}
+            {"name": name, "type": label_type, "attributes": []}
             for name in missing
         ]
 
@@ -555,7 +563,7 @@ def ensure_labels_exist(
                 all_labels.append({
                     "id": label.get("id"),
                     "name": label.get("name"),
-                    "type": label.get("type", "rectangle"),
+                    "type": label.get("type", label_type),
                     "attributes": label.get("attributes", [])
                 })
         all_labels.extend(new_labels)
@@ -679,7 +687,8 @@ def process_multisensor_dataset(
     dry_run: bool,
     limit: Optional[int],
     use_dataset_labels: bool = False,
-    split: str = "all"
+    split: str = "all",
+    label_type: str = DEFAULT_LABEL_TYPE,
 ) -> Tuple[int, int, int]:
     """
     Process a multisensor dataset.
@@ -688,6 +697,7 @@ def process_multisensor_dataset(
         use_dataset_labels: If True, use actual class labels from dataset.
                            If False (default), use single binary label.
         split: "test", "train", or "all" (default)
+        label_type: CVAT label type for sidebar tools ("rectangle", "any", etc.)
 
     Returns:
         (tasks_processed, shapes_created, tasks_skipped)
@@ -784,7 +794,7 @@ def process_multisensor_dataset(
                         label_map[name] = fake_id
                         fake_id += 1
             else:
-                label_map = ensure_labels_exist(host, session, task_id, all_label_names, org)
+                label_map = ensure_labels_exist(host, session, task_id, all_label_names, org, label_type=label_type)
 
             # Verify all labels have IDs
             missing_ids = [name for name in all_label_names if name not in label_map]
@@ -912,7 +922,8 @@ def process_mmoffice_dataset(
     dry_run: bool,
     limit: Optional[int],
     use_dataset_labels: bool = False,
-    split: str = "all"
+    split: str = "all",
+    label_type: str = DEFAULT_LABEL_TYPE,
 ) -> Tuple[int, int, int]:
     """
     Process mmoffice dataset.
@@ -921,6 +932,7 @@ def process_mmoffice_dataset(
         use_dataset_labels: If True, use actual class labels (class_1, class_2, etc.).
                            If False (default), use single binary label.
         split: "test", "train", or "all". Note: mmoffice only has test labels.
+        label_type: CVAT label type for sidebar tools ("rectangle", "any", etc.)
 
     Returns:
         (tasks_processed, shapes_created, tasks_skipped)
@@ -1030,7 +1042,7 @@ def process_mmoffice_dataset(
                             label_map[name] = fake_id
                             fake_id += 1
                 else:
-                    label_map = ensure_labels_exist(host, session, task_id, all_label_names, org)
+                    label_map = ensure_labels_exist(host, session, task_id, all_label_names, org, label_type=label_type)
 
                 missing_ids = [name for name in all_label_names if name not in label_map]
                 if missing_ids:
@@ -1245,6 +1257,10 @@ Examples:
     parser.add_argument('--split', choices=['test', 'train', 'all'], default=DEFAULT_SPLIT,
                         help=f'Data split to process: test, train, or all (default: {DEFAULT_SPLIT}). '
                              'Note: mmoffice only has test labels.')
+    parser.add_argument('--label-type', choices=VALID_LABEL_TYPES, default=DEFAULT_LABEL_TYPE,
+                        help=f'CVAT label type that controls sidebar drawing tools (default: {DEFAULT_LABEL_TYPE}). '
+                             '"rectangle" shows only Rectangle tool. '
+                             '"any" shows all drawing tools (Rectangle, Polygon, Polyline, Points, etc.).')
 
     args = parser.parse_args()
 
@@ -1275,6 +1291,7 @@ Examples:
         print("Label mode: Multi-class (use dataset labels)")
     else:
         print(f"Label mode: Binary (single label: {args.label})")
+    print(f"Label type: {args.label_type} (sidebar tools)")
     if args.dry_run:
         print("[DRY RUN MODE]")
     print("=" * 60)
@@ -1311,7 +1328,8 @@ Examples:
                 dry_run=args.dry_run,
                 limit=args.limit,
                 use_dataset_labels=args.use_dataset_labels,
-                split=args.split
+                split=args.split,
+                label_type=args.label_type,
             )
         elif dataset == "mmoffice":
             tasks, shapes, skipped = process_mmoffice_dataset(
@@ -1327,7 +1345,8 @@ Examples:
                 dry_run=args.dry_run,
                 limit=args.limit,
                 use_dataset_labels=args.use_dataset_labels,
-                split=args.split
+                split=args.split,
+                label_type=args.label_type,
             )
         else:
             print(f"  [SKIP] Unknown dataset type: {dataset}")

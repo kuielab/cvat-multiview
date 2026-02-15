@@ -507,6 +507,20 @@ python insert_bbox_annotations.py \
     --data-dir /mnt/data \
     --split test \
     --use-dataset-labels
+
+# 모든 사이드바 도구 활성화 (Polygon, Polyline, Points 등)
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --datasets multisensor_home1 \
+    --label-type any
+
+# 다중 클래스 + 모든 도구 활성화
+python insert_bbox_annotations.py \
+    --user admin --password admin123 \
+    --data-dir /mnt/data \
+    --use-dataset-labels \
+    --label-type any
 ```
 
 **지원 데이터 형식:**
@@ -546,8 +560,20 @@ python insert_bbox_annotations.py \
 | `--label` | 라벨 이름 (이진분류 시) | `Sound` |
 | `--use-dataset-labels` | 다중 클래스 모드 활성화 | `false` |
 | `--split` | 데이터 분할: `test`, `train`, `all` | `all` |
+| `--label-type` | 라벨 타입 (사이드바 도구 결정) | `rectangle` |
 | `--limit` | 최대 처리 task 수 | 무제한 |
 | `--dry-run` | 실제 삽입 없이 미리보기 | - |
+
+**label-type 옵션 (사이드바 도구 제어):**
+
+| label-type | 사이드바 도구 | 설명 |
+|------------|-------------|------|
+| `rectangle` (기본) | Rectangle만 | Bbox 라벨링에 적합 |
+| `any` | 전체 (Rectangle, Polygon, Polyline, Points, Ellipse, Cuboid, Mask, Skeleton) | 다양한 Shape 라벨링 필요 시 |
+| `polygon` | Polygon만 | 폴리곤 라벨링 전용 |
+| `polyline` | Polyline만 | 폴리라인 라벨링 전용 |
+
+**참고:** `--label-type`은 사이드바에 **어떤 도구를 보여줄지**만 결정합니다. 삽입되는 pre-annotation의 실제 형태는 항상 Rectangle(bbox)입니다.
 
 **divisions 옵션:**
 | divisions | 분할 비율 | 예시 (start=0s, end=10s, fps=30) |
@@ -701,6 +727,7 @@ EC2 서버 배포를 위한 전용 스크립트입니다.
 | `--local` | 로컬 테스트 모드 (localhost:8080) |
 | `--multi-class` | 다중 클래스 라벨 사용 (기본: 이진분류 Sound) |
 | `--split VALUE` | 데이터 분할 선택: `test`, `train`, `all` (기본: all) |
+| `--label-type TYPE` | 라벨 타입: `rectangle`, `any` 등 (기본: rectangle). `any` 사용 시 모든 도구 활성화 |
 
 ### 데이터 분할 (--split)
 
@@ -745,6 +772,8 @@ cd /home/ubuntu/cvat-multiview/scripts/init
 ./setup_ielab_production.sh --split train all          # train 데이터만
 ./setup_ielab_production.sh --split test --multi-class all  # test + 다중 클래스
 ./setup_ielab_production.sh --local --split test --multi-class all  # 로컬 test + 다중 클래스
+./setup_ielab_production.sh --label-type any all                   # 모든 도구 활성화
+./setup_ielab_production.sh --local --label-type any --multi-class all  # 로컬 + 다중 클래스 + 모든 도구
 ```
 
 ### Pre-annotation 라벨 모드
