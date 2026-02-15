@@ -27,7 +27,7 @@ import MultiviewVideoGrid from './multiview-video-grid';
 import SpectrogramPanel from './spectrogram-panel';
 import MultiviewObjectsList from './multiview-objects-list';
 import MultiviewCanvasWrapper from './multiview-canvas-wrapper';
-import { clearMultiviewFrameCache } from './multiview-frame-provider';
+import { clearMultiviewFrameCache, warmMultiviewFrameCache } from './multiview-frame-provider';
 import './styles.scss';
 
 const PLAYBACK_RATE_OPTIONS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -78,11 +78,16 @@ export default function MultiviewWorkspace(): JSX.Element {
     const audioViewKey = `view${activeView}` as keyof typeof multiviewData.videos;
     const audioUrl = multiviewData?.videos?.[audioViewKey]?.url || '';
 
-    // Use ref for frameNumber to avoid recreating callbacks on every frame change
+    // Use refs for values that change frequently but shouldn't re-create the rAF loop
     const frameNumberRef = useRef(frameNumber);
     useEffect(() => {
         frameNumberRef.current = frameNumber;
     }, [frameNumber]);
+
+    const activeViewRef = useRef(activeView);
+    useEffect(() => {
+        activeViewRef.current = activeView;
+    }, [activeView]);
 
     // Handle play/pause state changes - synchronized playback
     // Only depends on `playing` to avoid unnecessary re-runs
@@ -157,6 +162,22 @@ export default function MultiviewWorkspace(): JSX.Element {
                 const targetFrame = Math.min(Math.max(newFrame, job.startFrame || 0), job.stopFrame);
                 Promise.resolve(dispatch(changeFrameAsync(targetFrame))).finally(() => {
                     pendingDispatch = false;
+                });
+
+                // Auto-stop: 마지막 프레임 도달 시 재생 정지
+                if (targetFrame >= job.stopFrame) {
+                    dispatch(switchPlay(false));
+                    return; // rAF 스케줄링 안 함 — useEffect cleanup이 취소 처리
+                }
+
+                // Pre-decode current chunk in background Web Worker.
+                // When user pauses, the decoded ImageBitmap is already cached
+                // → canvas renders instantly with no freeze.
+                warmMultiviewFrameCache({
+                    taskId: job.taskId,
+                    viewId: activeViewRef.current,
+                    frameNumber: targetFrame,
+                    jobStartFrame: job.startFrame || 0,
                 });
             }
 

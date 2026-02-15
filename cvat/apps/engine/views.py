@@ -1703,7 +1703,10 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
             height = video_stream.height
             fps = float(video_stream.average_rate) if video_stream.average_rate else 30.0
             duration = float(container.duration / _av.time_base) if container.duration else 0
-            frame_count = video_stream.frames or (int(duration * fps) if duration > 0 else 0)
+            frame_count = video_stream.frames
+            if frame_count <= 0:
+                # duration * fps 추정: round()로 반올림 (int() 절삭보다 정확)
+                frame_count = round(duration * fps) if duration > 0 else 0
             container.close()
             return {
                 'width': width,
@@ -1735,7 +1738,10 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
             width = int(video_stream['width'])
             height = int(video_stream['height'])
             duration = float(data['format'].get('duration', 0))
-            frame_count = int(duration * fps) if duration > 0 else 0
+            # nb_frames: 컨테이너 메타데이터에서 직접 읽음 (정확)
+            frame_count = int(video_stream.get('nb_frames', 0))
+            if frame_count <= 0:
+                frame_count = round(duration * fps) if duration > 0 else 0
 
             return {
                 'width': width,
@@ -1750,8 +1756,8 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
                 'width': 1920,
                 'height': 1080,
                 'fps': 30.0,
-                'frame_count': 3000,
-                'duration': 100.0,
+                'frame_count': 0,
+                'duration': 0.0,
             }
 
     def _get_video_metadata_cached(self, video_path: str) -> dict[str, Any]:
@@ -1940,7 +1946,12 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
 
                 # Use actual frame count from first video (all should be synchronized)
                 # In multiview setup, all videos should have the same frame count
-                frame_count = video_metadata_list[0]['frame_count'] if video_metadata_list else 3000
+                frame_count = video_metadata_list[0]['frame_count'] if video_metadata_list else 0
+                if frame_count <= 0:
+                    raise ValueError(
+                        'Could not determine video frame count. '
+                        'Ensure ffprobe or PyAV can read the video files.'
+                    )
                 data_obj.size = frame_count
                 data_obj.stop_frame = frame_count - 1
                 data_obj.save()
@@ -2200,7 +2211,9 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         )
         if chunk_path.exists():
             with open(chunk_path, 'rb') as f:
-                return HttpResponse(f.read(), content_type='video/mp4')
+                response = HttpResponse(f.read(), content_type='video/mp4')
+                response['Cache-Control'] = 'private, max-age=3600'
+                return response
 
         # Fallback: on-the-fly encoding for legacy tasks without pre-encoded chunks.
         # After encoding, cache to disk so subsequent requests are fast.
@@ -2223,7 +2236,9 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
             except Exception:
                 pass  # Non-fatal: serving still works without disk cache
 
-            return HttpResponse(chunk_bytes, content_type='video/mp4')
+            response = HttpResponse(chunk_bytes, content_type='video/mp4')
+            response['Cache-Control'] = 'private, max-age=3600'
+            return response
         except Exception as e:
             return HttpResponse(f'Error serving video: {e}', status=500)
 
