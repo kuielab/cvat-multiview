@@ -92,6 +92,7 @@ PyAV로 실제 비디오 프레임 수도 확인하여 더 큰 값을 적용합�
 |------|------|
 | `migrate_v1.sh` | **Shell wrapper** — Docker 컨테이너 안에서 batch 실행 |
 | `migrate_v1.py` | **핵심 로직** — batch(`--all-jobs`) + 단일 XML 모드 |
+| `fix_video_dimensions.sh` | **Video DB 해상도 수정** — PyAV로 실제 해상도 읽어서 DB UPDATE |
 | `README.md` | 이 문서 |
 
 ## 사용법
@@ -135,6 +136,55 @@ python scripts/migration/migrate_v1.py \
 | `--dry-run` | 변환 대상 확인만 (DB 수정 안 함) | false |
 | `input` / `output` | XML 파일 경로 (단일 모드) | batch 시 불필요 |
 | `--target-w` / `--target-h` | 수동 해상도 지정 (단일 모드) | - |
+
+---
+
+## fix_video_dimensions: Video DB 해상도 수정
+
+### 왜 필요한가
+
+`migrate_v1`은 annotation 좌표만 변환하고, `engine_video` 테이블의 `width`/`height`는 수정하지 않습니다.
+DB에 1920x1080이 남아있으면:
+
+- **런타임 표시**: 영향 없음 (meta endpoint가 PyAV로 파일에서 직접 읽음)
+- **Export XML**: `<original_size>`에 1920x1080이 출력됨 → **좌표(320x240)와 불일치**
+- **다운스트림**: YOLO/COCO 변환, 학습 파이프라인에서 좌표 정규화 기준이 틀어짐
+
+### 동작 방식
+
+1. 모든 multiview task의 Video 레코드를 순회
+2. PyAV로 실제 비디오 파일에서 해상도를 읽음
+3. DB 값과 다르면 UPDATE
+4. Export 캐시 삭제 + worker 재시작
+
+### 사용법
+
+```bash
+# Dry-run (현재 DB vs 실제 해상도 비교, DB 수정 안 함)
+bash scripts/migration/fix_video_dimensions.sh --dry-run
+
+# 실제 업데이트 (모든 multiview task)
+bash scripts/migration/fix_video_dimensions.sh
+
+# 특정 data_id만 업데이트
+bash scripts/migration/fix_video_dimensions.sh --data-ids 8,9
+```
+
+### 옵션
+
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--dry-run` | 변경 없이 비교만 표시 | false |
+| `--data-ids IDs` | 특정 data ID만 처리 (쉼표 구분) | 전체 multiview |
+
+### 실행 순서
+
+```
+migrate_v1.sh          →  fix_video_dimensions.sh
+(annotation 좌표 변환)     (Video DB 해상도 수정)
+```
+
+> `migrate_v1` 실행 후 반드시 `fix_video_dimensions`도 실행해야 export가 정상 동작합니다.
 
 ---
 
