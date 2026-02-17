@@ -2099,25 +2099,53 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
 
         chunk_size = _get_multiview_chunk_size(db_task)
 
-        # Read actual dimensions from the video file (DB may have stale/fallback values)
+        # Read actual dimensions and frame count from the video file
+        # (DB may have stale/fallback values from missing ffprobe era)
         actual_width, actual_height = video.width, video.height
+        actual_frame_count = db_task.data.size
         try:
             import av as _av
             container = _av.open(video.path)
             vs = container.streams.video[0]
             actual_width, actual_height = vs.width, vs.height
+            fc = vs.frames
+            if fc <= 0:
+                dur = float(vs.duration * vs.time_base) if vs.duration else 0
+                avg_rate = float(vs.average_rate) if vs.average_rate else 0
+                fc = round(dur * avg_rate) if dur > 0 and avg_rate > 0 else 0
+            if fc > 0:
+                actual_frame_count = fc
             container.close()
         except Exception:
             pass
+
+        # Auto-heal: update DB if dimensions or frame count are stale
+        db_data = db_task.data
+        data_fields_to_update = []
+        if actual_frame_count > 0 and actual_frame_count != db_data.size:
+            db_data.size = actual_frame_count
+            db_data.stop_frame = actual_frame_count - 1
+            data_fields_to_update.extend(['size', 'stop_frame'])
+        if data_fields_to_update:
+            db_data.save(update_fields=data_fields_to_update)
+            # Also fix Segment.stop_frame
+            from cvat.apps.engine.models import Segment
+            Segment.objects.filter(task=db_task).update(stop_frame=actual_frame_count - 1)
+
+        # Auto-heal: update Video dimensions if stale
+        if (video.width != actual_width or video.height != actual_height):
+            video.width = actual_width
+            video.height = actual_height
+            video.save(update_fields=['width', 'height'])
 
         payload = {
             'chunk_size': chunk_size,
             'chapters': None,
             'chunks_updated_date': db_task.get_chunks_updated_date(),
-            'size': db_task.data.size,
-            'image_quality': db_task.data.image_quality,
-            'start_frame': db_task.data.start_frame,
-            'stop_frame': db_task.data.stop_frame,
+            'size': actual_frame_count,
+            'image_quality': db_data.image_quality,
+            'start_frame': db_data.start_frame,
+            'stop_frame': actual_frame_count - 1 if actual_frame_count > 0 else db_data.stop_frame,
             'frame_filter': db_task.data.frame_filter,
             'frames': [{
                 'width': actual_width,

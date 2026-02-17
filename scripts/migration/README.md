@@ -93,6 +93,7 @@ PyAV로 실제 비디오 프레임 수도 확인하여 더 큰 값을 적용합�
 | `migrate_v1.sh` | **Shell wrapper** — Docker 컨테이너 안에서 batch 실행 |
 | `migrate_v1.py` | **핵심 로직** — batch(`--all-jobs`) + 단일 XML 모드 |
 | `fix_video_dimensions.sh` | **Video DB 해상도 수정** — PyAV로 실제 해상도 읽어서 DB UPDATE |
+| `fix_frame_count.sh` | **Frame count 수정** — PyAV로 실제 프레임 수 읽어서 Data/Segment DB UPDATE |
 | `README.md` | 이 문서 |
 
 ## 사용법
@@ -180,11 +181,62 @@ bash scripts/migration/fix_video_dimensions.sh --data-ids 8,9
 ### 실행 순서
 
 ```
-migrate_v1.sh          →  fix_video_dimensions.sh
-(annotation 좌표 변환)     (Video DB 해상도 수정)
+migrate_v1.sh          →  fix_video_dimensions.sh  →  fix_frame_count.sh
+(annotation 좌표 변환)     (Video DB 해상도 수정)       (프레임 수/stop_frame 수정)
 ```
 
-> `migrate_v1` 실행 후 반드시 `fix_video_dimensions`도 실행해야 export가 정상 동작합니다.
+> `migrate_v1` 실행 후 반드시 `fix_video_dimensions`와 `fix_frame_count`도 실행해야 export와 재생이 정상 동작합니다.
+
+---
+
+## fix_frame_count: Frame Count DB 수정
+
+### 왜 필요한가
+
+Master의 `_extract_video_metadata()`에서 ffprobe 미설치로 `frame_count: 3000`이 fallback 저장되었습니다.
+이 값이 `Data.size`, `Data.stop_frame`, `Segment.stop_frame`에 남아있으면:
+
+- **재생**: 실제 비디오가 끝나도 프레임 카운터가 계속 올라감 (stop_frame까지)
+- **스펙트로그램**: 실제 영상보다 긴 timeline 표시
+- **Export**: segment 범위가 실제 프레임 수를 초과
+
+### 동작 방식
+
+1. 모든 multiview task의 첫 번째 View 비디오를 PyAV로 열어 실제 프레임 수 확인
+2. `Data.size`, `Data.stop_frame` 업데이트
+3. 해당 task의 모든 `Segment.stop_frame` 업데이트
+4. Export 캐시 삭제 + worker 재시작
+
+### 사용법
+
+```bash
+# Dry-run (현재 DB vs 실제 프레임 수 비교, DB 수정 안 함)
+bash scripts/migration/fix_frame_count.sh --dry-run
+
+# 실제 업데이트 (모든 multiview task)
+bash scripts/migration/fix_frame_count.sh
+
+# 특정 task만 업데이트
+bash scripts/migration/fix_frame_count.sh --task-ids 1,2,3
+```
+
+### 옵션
+
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--dry-run` | 변경 없이 비교만 표시 | false |
+| `--task-ids IDs` | 특정 task ID만 처리 (쉼표 구분) | 전체 multiview |
+
+### Auto-heal (런타임 자동 수정)
+
+Shell 스크립트 외에, **multiview meta API endpoint**에도 auto-heal 로직이 추가되어 있습니다.
+Task/Job 페이지에 접속할 때마다 PyAV로 실제 값을 읽고, DB와 다르면 자동으로 수정합니다.
+
+수정 대상:
+- `Data.size`, `Data.stop_frame`, `Segment.stop_frame` (프레임 수)
+- `Video.width`, `Video.height` (해상도)
+
+따라서 스크립트를 실행하지 않아도, 해당 task에 한 번만 접속하면 DB가 자동으로 교정됩니다.
 
 ---
 
