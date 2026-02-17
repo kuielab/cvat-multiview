@@ -36,7 +36,6 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
     const [loadingProgress, setLoadingProgress] = useState(0);
     const [loadingStatus, setLoadingStatus] = useState('');
     const [error, setError] = useState<string | null>(null);
-    const [audioDuration, setAudioDuration] = useState(0);
     const currentTimeRef = useRef<number>(0);
 
     const dispatch = useDispatch();
@@ -48,7 +47,7 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
     // Get FPS from multiview data (first view), fallback to 30
     const fps = (multiviewData?.videos as MultiviewVideos | undefined)?.view1?.fps || 30;
     const currentTime = frameNumber / fps;
-    const duration = audioDuration || (job ? (job.stopFrame - job.startFrame) / fps : 100);
+    const duration = job ? (job.stopFrame - job.startFrame) / fps : 0;
 
     useEffect(() => {
         currentTimeRef.current = currentTime;
@@ -147,16 +146,18 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         ctx.putImageData(imageData, 0, 0);
 
         // Draw time axis labels
-        drawTimeLabels(ctx, width, height);
+        drawTimeLabels(ctx, width, height, duration);
 
         // Draw frequency labels
         drawFrequencyLabels(ctx, width, height);
-    }, []);
+    }, [duration]);
 
     /**
      * Draw time axis labels
      */
-    const drawTimeLabels = (ctx: CanvasRenderingContext2D, width: number, height: number): void => {
+    const drawTimeLabels = (
+        ctx: CanvasRenderingContext2D, width: number, height: number, totalDuration: number,
+    ): void => {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
         ctx.font = '11px monospace';
         ctx.textAlign = 'center';
@@ -164,7 +165,7 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
         const numLabels = 10;
         for (let i = 0; i <= numLabels; i++) {
             const x = (i / numLabels) * width;
-            const time = (i / numLabels) * duration;
+            const time = (i / numLabels) * totalDuration;
             const label = time < 60
                 ? `${time.toFixed(1)}s`
                 : `${Math.floor(time / 60)}:${(time % 60).toFixed(0).padStart(2, '0')}`;
@@ -360,7 +361,6 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
 
             // Mix all audio buffers
             const mixedBuffer = audioEngine.mixAudioBuffers(buffers);
-            setAudioDuration(mixedBuffer.duration);
 
             setLoadingStatus('Generating spectrogram...');
             setLoadingProgress(65);
