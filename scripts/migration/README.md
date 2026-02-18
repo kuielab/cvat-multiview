@@ -203,9 +203,10 @@ Master의 `_extract_video_metadata()`에서 ffprobe 미설치로 `frame_count: 3
 ### 동작 방식
 
 1. 모든 multiview task의 첫 번째 View 비디오를 PyAV로 열어 실제 프레임 수 확인
-2. `Data.size`, `Data.stop_frame` 업데이트
-3. 해당 task의 모든 `Segment.stop_frame` 업데이트
-4. Export 캐시 삭제 + worker 재시작
+2. 실제 프레임 수 초과 annotation 삭제 (`TrackedShape`, `LabeledShape`)
+3. `Data.size`, `Data.stop_frame` 업데이트
+4. 해당 task의 모든 `Segment.stop_frame` 업데이트
+5. Export 캐시 삭제 + worker 재시작
 
 ### 사용법
 
@@ -227,6 +228,18 @@ bash scripts/migration/fix_frame_count.sh --task-ids 1,2,3
 | `--dry-run` | 변경 없이 비교만 표시 | false |
 | `--task-ids IDs` | 특정 task ID만 처리 (쉼표 구분) | 전체 multiview |
 
+### Annotation 정리
+
+`fix_frame_count.sh`와 auto-heal 모두, stop_frame을 줄이기 전에 **실제 프레임 수를 초과하는 annotation을 자동 삭제**합니다.
+
+- `TrackedShape` (track의 keyframe shape) 중 `frame > actual_frame_count - 1`인 레코드 삭제
+- `LabeledShape` (독립 shape) 중 `frame > actual_frame_count - 1`인 레코드 삭제
+
+이 정리를 하지 않고 stop_frame만 줄이면, DB에 남아있는 초과 annotation이 export 시
+`ValueError: Unknown internal frame id`를 유발합니다.
+(export worker가 DB에서 frame 필터 없이 모든 annotation을 로드한 뒤,
+`abs_frame_id(frame)`에서 `rel_range` 밖의 frame을 만나면 에러 발생)
+
 ### Auto-heal (런타임 자동 수정)
 
 Shell 스크립트 외에, **multiview meta API endpoint**에도 auto-heal 로직이 추가되어 있습니다.
@@ -235,8 +248,13 @@ Task/Job 페이지에 접속할 때마다 PyAV로 실제 값을 읽고, DB와 �
 수정 대상:
 - `Data.size`, `Data.stop_frame`, `Segment.stop_frame` (프레임 수)
 - `Video.width`, `Video.height` (해상도)
+- 실제 프레임 수 초과 annotation 삭제 (`TrackedShape`, `LabeledShape`)
 
 따라서 스크립트를 실행하지 않아도, 해당 task에 한 번만 접속하면 DB가 자동으로 교정됩니다.
+
+> **주의**: Export worker는 meta endpoint를 거치지 않습니다.
+> 페이지 접속 없이 바로 export하면 auto-heal이 실행되지 않으므로,
+> EC2에서는 `fix_frame_count.sh`를 먼저 실행하는 것을 권장합니다.
 
 ---
 

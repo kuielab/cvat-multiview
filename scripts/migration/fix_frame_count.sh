@@ -119,29 +119,54 @@ for task in tasks.order_by('id'):
         errors += 1
         continue
 
+    # Check for annotations beyond actual frame count
+    from cvat.apps.engine.models import Job as JobModel
+    from cvat.apps.engine.models import TrackedShape, LabeledShape
+    job_ids = JobModel.objects.filter(segment__task=task).values_list('id', flat=True)
+    last_valid = actual_fc - 1
+
+    excess_tracked = TrackedShape.objects.filter(
+        track__job_id__in=job_ids, frame__gt=last_valid,
+    ).count()
+    excess_shapes = LabeledShape.objects.filter(
+        job_id__in=job_ids, frame__gt=last_valid,
+    ).count()
+
     segments = Segment.objects.filter(task=task)
     seg_stops = list(segments.values_list('stop_frame', flat=True))
 
     print(f'Task {task.id}: {task.name}')
     print(f'  DB: size={db_size}, stop_frame={db_stop}, segment_stops={seg_stops}')
     print(f'  Actual: frame_count={actual_fc}')
+    if excess_tracked or excess_shapes:
+        print(f'  WARNING: {excess_tracked} tracked shapes, {excess_shapes} shapes beyond frame {last_valid}')
 
-    if db_size == actual_fc and db_stop == actual_fc - 1:
-        all_seg_ok = all(s == actual_fc - 1 for s in seg_stops)
-        if all_seg_ok:
+    if db_size == actual_fc and db_stop == last_valid:
+        all_seg_ok = all(s == last_valid for s in seg_stops)
+        if all_seg_ok and not excess_tracked and not excess_shapes:
             print(f'  OK — already correct')
             skipped += 1
             continue
 
     tag = 'DRY-RUN' if dry_run else 'UPDATE'
-    print(f'  [{tag}] size: {db_size} -> {actual_fc}, stop_frame: {db_stop} -> {actual_fc - 1}')
+    print(f'  [{tag}] size: {db_size} -> {actual_fc}, stop_frame: {db_stop} -> {last_valid}')
 
     if not dry_run:
+        # Remove annotations beyond actual frame count
+        if excess_tracked or excess_shapes:
+            del_t = TrackedShape.objects.filter(
+                track__job_id__in=job_ids, frame__gt=last_valid,
+            ).delete()[0]
+            del_s = LabeledShape.objects.filter(
+                job_id__in=job_ids, frame__gt=last_valid,
+            ).delete()[0]
+            print(f'  [{tag}] Removed {del_t} tracked shapes, {del_s} shapes beyond frame {last_valid}')
+
         data.size = actual_fc
-        data.stop_frame = actual_fc - 1
+        data.stop_frame = last_valid
         data.save(update_fields=['size', 'stop_frame'])
 
-        segments.update(stop_frame=actual_fc - 1)
+        segments.update(stop_frame=last_valid)
         print(f'  [{tag}] Updated {segments.count()} segment(s)')
 
     updated += 1

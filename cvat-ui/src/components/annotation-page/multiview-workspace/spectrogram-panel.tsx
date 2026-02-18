@@ -47,7 +47,7 @@ export default function SpectrogramPanel(props: Props): JSX.Element {
     // Get FPS from multiview data (first view), fallback to 30
     const fps = (multiviewData?.videos as MultiviewVideos | undefined)?.view1?.fps || 30;
     const currentTime = frameNumber / fps;
-    const duration = job ? (job.stopFrame - job.startFrame) / fps : 0;
+    const duration = job ? (job.stopFrame - job.startFrame + 1) / fps : 0;
 
     useEffect(() => {
         currentTimeRef.current = currentTime;

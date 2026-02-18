@@ -2123,13 +2123,30 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         db_data = db_task.data
         data_fields_to_update = []
         if actual_frame_count > 0 and actual_frame_count != db_data.size:
+            from cvat.apps.engine.models import Segment, Job
+            from cvat.apps.engine.models import LabeledShape, TrackedShape
+            job_ids = Job.objects.filter(segment__task=db_task).values_list('id', flat=True)
+
+            # Remove annotations beyond actual frame count (invalid data from stale frame_count)
+            last_valid = actual_frame_count - 1
+            del_tracked = TrackedShape.objects.filter(
+                track__job_id__in=job_ids, frame__gt=last_valid,
+            ).delete()[0]
+            del_shapes = LabeledShape.objects.filter(
+                job_id__in=job_ids, frame__gt=last_valid,
+            ).delete()[0]
+            if del_tracked or del_shapes:
+                slogger.glob.info(
+                    'Auto-heal task %d: removed %d tracked shapes, %d shapes beyond frame %d',
+                    db_task.id, del_tracked, del_shapes, last_valid,
+                )
+
             db_data.size = actual_frame_count
-            db_data.stop_frame = actual_frame_count - 1
+            db_data.stop_frame = last_valid
             data_fields_to_update.extend(['size', 'stop_frame'])
+
         if data_fields_to_update:
             db_data.save(update_fields=data_fields_to_update)
-            # Also fix Segment.stop_frame
-            from cvat.apps.engine.models import Segment
             Segment.objects.filter(task=db_task).update(stop_frame=actual_frame_count - 1)
 
         # Auto-heal: update Video dimensions if stale

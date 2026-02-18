@@ -666,3 +666,48 @@ CVAT 사이드바에 표시할 드로잉 도구 제어:
 | `559f04a` | multiview auto-stop + frame_count 정확도 개선 |
 | `4230426` | FrameDecoder onDecodeAll race fix + warm cache API |
 | `926a7f6` | --label-type 옵션 (사이드바 도구 제어) |
+
+---
+
+## 2026-02-16 ~ 02-18: Export ValueError 수정, Spectrogram Duration, Auto-heal Annotation 정리
+
+### Export `ValueError: Unknown internal frame id` 수정
+
+EC2에서 download 시 `ValueError: Unknown internal frame id 2297` 에러 발생.
+
+**근본 원인**:
+- Master의 ffprobe fallback으로 `stop_frame=2999`(3000 프레임)이 DB에 저장됨
+- 작업자가 실제 비디오 프레임 수(예: 2297) 이후의 프레임에 annotation을 생성
+- `fix_frame_count.sh` 또는 auto-heal로 `stop_frame`을 실제 값으로 수정
+- 하지만 **초과 annotation이 DB에 남아있는 상태**에서 export 시도
+- Export worker가 `_init_shapes_from_db()`에서 frame 필터 없이 모든 annotation 로드
+- `abs_frame_id(frame)` 호출 시 `frame not in rel_range` → **ValueError**
+
+**수정**: `fix_frame_count.sh`와 `views.py` auto-heal 양쪽에서 stop_frame 수정 전에
+실제 프레임 수 초과 annotation(`TrackedShape`, `LabeledShape`)을 먼저 삭제하도록 변경.
+
+### Spectrogram Duration Off-by-one 수정
+
+스펙트로그램 타임라인 길이가 실제 영상보다 1프레임 분량 짧았음.
+
+```diff
+- const duration = job ? (job.stopFrame - job.startFrame) / fps : 0;
++ const duration = job ? (job.stopFrame - job.startFrame + 1) / fps : 0;
+```
+
+`stopFrame`이 inclusive 인덱스이므로 `+1`이 필요. playhead 위치, 클릭 seek, 시간 라벨에 영향.
+
+### Auto-heal Export Worker 주의사항
+
+Auto-heal은 multiview meta API endpoint(`views.py`)에서만 동작.
+**Export worker는 meta endpoint를 거치지 않으므로**, 페이지 접속 없이 바로 export하면
+auto-heal이 실행되지 않음. EC2에서는 `fix_frame_count.sh`를 먼저 실행하는 것을 권장.
+
+### 변경 파일
+
+| 파일 | 변경 |
+|------|------|
+| `spectrogram-panel.tsx` | duration `(stopFrame - startFrame)` → `(stopFrame - startFrame + 1)` |
+| `views.py` | auto-heal에 annotation 삭제 로직 추가 (`TrackedShape`, `LabeledShape`) |
+| `fix_frame_count.sh` | batch 스크립트에 annotation 삭제 로직 추가 |
+| `scripts/migration/README.md` | annotation 정리 동작, export worker 주의사항 문서화 |
