@@ -13,6 +13,7 @@ import {
 import { FramesMetaData } from './frames';
 import serverProxy from './server-proxy';
 import { SerializedFramesMetaData } from './server-response-types';
+import { getAdaptiveQualityTracker, resetAdaptiveQuality } from './adaptive-quality';
 
 type CacheKey = string;
 
@@ -85,7 +86,8 @@ function maybePrefetchChunks(
         cache.prefetchingChunkIndex = targetChunkIndex;
 
         // Fire-and-forget: fetch chunk from server and decode in background
-        cache.getChunk(targetChunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+        const tracker = getAdaptiveQualityTracker();
+        cache.getChunk(targetChunkIndex, tracker.getQuality()).then((chunk: ArrayBuffer) => {
             // Guard: if getMultiviewFrame started a decode while HTTP was in-flight, bail out
             // to avoid requestDecodeBlock callback conflicts
             if (cache.activeChunkRequest !== null) {
@@ -229,8 +231,12 @@ export async function getMultiviewFrame(params: {
 
             cache.activeChunkRequest = new Promise<void>((resolveLoad) => {
                 const fetchStart = Date.now();
-                cache.getChunk(chunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+                const mainTracker = getAdaptiveQualityTracker();
+                mainTracker.onChunkRequested();
+                const fetchQuality = mainTracker.getQuality();
+                cache.getChunk(chunkIndex, fetchQuality).then((chunk: ArrayBuffer) => {
                     const fetchTime = Date.now() - fetchStart;
+                    mainTracker.recordDownload(fetchTime, fetchQuality);
                     try {
                         cache.provider.requestDecodeBlock(
                             chunk,
@@ -354,7 +360,11 @@ export function warmCacheForFrame(params: {
         warmingChunks[key] = chunkIndex;
         cache.provider.setRenderSize(meta.frames[0].width, meta.frames[0].height);
 
-        cache.getChunk(chunkIndex, ChunkQuality.COMPRESSED).then((chunk: ArrayBuffer) => {
+        const warmTracker = getAdaptiveQualityTracker();
+        const warmQuality = warmTracker.getQuality();
+        const warmFetchStart = Date.now();
+        cache.getChunk(chunkIndex, warmQuality).then((chunk: ArrayBuffer) => {
+            warmTracker.recordDownload(Date.now() - warmFetchStart, warmQuality);
             // Final guard: if getMultiviewFrame started between fetch and decode, bail out
             if (cache.activeChunkRequest !== null) {
                 warmingChunks[key] = null;
@@ -391,6 +401,7 @@ export function clearMultiviewFramesCache(taskId?: number, viewId?: number): voi
     Object.keys(multiviewFrameMetaCache).forEach((key) => delete multiviewFrameMetaCache[key]);
     Object.keys(multiviewFrameDataCache).forEach((key) => delete multiviewFrameDataCache[key]);
     Object.keys(warmingChunks).forEach((key) => delete warmingChunks[key]);
+    resetAdaptiveQuality();
 }
 
 export function getMultiviewSegmentFrameNumbers(

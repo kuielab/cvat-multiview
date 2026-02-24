@@ -2263,13 +2263,16 @@ class TaskViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         # Fallback: on-the-fly encoding for legacy tasks without pre-encoded chunks.
         # After encoding, cache to disk so subsequent requests are fast.
         try:
-            compressed_writer = Mpeg4CompressedChunkWriter(
-                quality=db_task.data.image_quality, dimension=DimensionType.DIM_2D,
-            )
+            if quality == FrameQuality.ORIGINAL:
+                writer = Mpeg4ChunkWriter(quality=100, dimension=DimensionType.DIM_2D)
+            else:
+                writer = Mpeg4CompressedChunkWriter(
+                    quality=db_task.data.image_quality, dimension=DimensionType.DIM_2D,
+                )
             import io
             buffer = io.BytesIO()
             with closing(_read_multiview_video_frames(video.path, frame_ids)) as frame_iter:
-                compressed_writer.save_as_chunk(frame_iter, buffer)
+                writer.save_as_chunk(frame_iter, buffer)
             buffer.seek(0)
             chunk_bytes = buffer.getvalue()
 
